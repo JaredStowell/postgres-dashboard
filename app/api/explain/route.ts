@@ -3,6 +3,7 @@ import {
   detectPlanWarnings,
   exportPlanJson,
   exportPlanMarkdown,
+  redactSql,
   sanitizeExplainPlan,
   validateExplainSql,
   verifyExplainConfirmationToken,
@@ -10,7 +11,13 @@ import {
 import { optionalString } from "@/lib/config/env";
 import { EXPLAIN_ANALYZE_CONFIRMATION, runExplain } from "@/lib/db/explain";
 import { listRegisteredDatabases, saveExplainRun } from "@/lib/db";
-import { ApiError, jsonResponse, parseJson, route } from "@/lib/http/api";
+import {
+  ApiError,
+  assertJsonByteSize,
+  jsonResponse,
+  parseJson,
+  route,
+} from "@/lib/http/api";
 import { getRuntimeEnv } from "@/lib/runtime/env";
 import { getControlDatabase, getTargetContext } from "@/lib/server/context";
 import { z } from "zod";
@@ -25,6 +32,7 @@ const parameterSchema = z.union([
 const requestSchema = z
   .object({
     source: z.string().min(1).max(63).optional(),
+    schema: z.string().min(1).max(255).optional(),
     sql: z.string().min(1).max(50_000),
     parameters: z.array(parameterSchema).max(100).default([]),
     analyze: z.boolean().default(false),
@@ -56,6 +64,12 @@ export const POST = route(async (request: Request) => {
         input.confirmationToken,
         input.sql,
         secret,
+        {},
+        {
+          source: input.source,
+          schema: input.schema,
+          parameters: input.parameters,
+        },
       ))
     ) {
       throw new ApiError(
@@ -69,11 +83,18 @@ export const POST = route(async (request: Request) => {
   const { db, target } = await getTargetContext(input.source);
   const result = await runExplain(db, {
     sql: input.sql,
+    schema: input.schema,
     parameters: input.parameters,
     analyze: input.analyze,
     confirmation: input.analyze ? EXPLAIN_ANALYZE_CONFIRMATION : undefined,
     statementTimeoutMs: input.statementTimeoutMs,
     lockTimeoutMs: input.lockTimeoutMs,
+  });
+  assertJsonByteSize(result.plan, {
+    maxBytes: 512 * 1_024,
+    code: "plan_too_large",
+    message:
+      "The PostgreSQL plan exceeds the 512 KiB analysis and export limit.",
   });
   const sanitizedPlan = sanitizeExplainPlan(result.plan);
   const metrics = calculatePlanMetrics(sanitizedPlan);
@@ -93,7 +114,7 @@ export const POST = route(async (request: Request) => {
         candidate.databaseName === databaseName,
     );
     if (sourceDatabase) {
-      const redacted = classification.normalizedSql;
+      const redacted = redactSql(classification.normalizedSql);
       const digestBytes = await crypto.subtle.digest(
         "SHA-256",
         new TextEncoder().encode(redacted),

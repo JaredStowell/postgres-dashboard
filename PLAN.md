@@ -113,6 +113,7 @@ Create ordered, reversible-minded SQL migrations:
 3. `0003_plans.sql`: explain runs, plan JSON, sanitized exports, plan comparisons.
 4. `0004_findings.sql`: rules, findings, evidence, status history, annotations.
 5. `0005_ai_advisor.sql`: analysis requests/results, payload digests, model/request metadata, recommendations.
+6. `0006_alert_rule_expansion.sql`: configurable thresholds and seeded rules for maintenance, contention, index, and plan-change findings.
 
 Migrations must be idempotently tracked, run through a repository script, and be covered by integration tests. The local database initialization separately enables extensions and creates fixture schemas; application migrations do not mutate monitored schemas.
 
@@ -188,7 +189,7 @@ Migrations must be idempotently tracked, run through a repository script, and be
 The implementation is done only when:
 
 - Every tab and fancy addition described above is present and connected to real local PostgreSQL data or an explicitly labeled capability-gated state.
-- All five application migrations and the local fixture/bootstrap flow work from a clean checkout.
+- All six application migrations and the local fixture/bootstrap flow work from a clean checkout.
 - Every database endpoint is bounded, validated, and tested.
 - EXPLAIN and guarded EXPLAIN ANALYZE work with the documented safety controls.
 - Snapshot history, deltas, regressions, plan diffs, alerts/findings, and sanitized exports work end to end.
@@ -198,3 +199,21 @@ The implementation is done only when:
 - Documentation explains local startup, migrations, fixture workload, test commands, architecture, security model, Cloudflare bindings, Hyperdrive cache requirements, PlanetScale prerequisites, and deployment handoff.
 - The repository is committed and pushed when a remote is available. If no remote exists, commits are still created on `main` and the missing push destination is reported honestly.
 - Cloud deployment is the only intentionally unfinished step.
+
+## Completion record
+
+Implementation completed on 2026-07-13 with deployment intentionally deferred. The finished application includes all eight workspaces, six migrations, local PostgreSQL fixtures, a scheduled and directly invokable collector, structured OpenAI Advisor integration, capability-gated HypoPG and `pgstattuple` workflows, reset-aware histories, contextual findings, responsive/accessible UI states, and production-shaped Cloudflare Worker and Hyperdrive configuration.
+
+Final verification evidence:
+
+- Formatting, lint, TypeScript, 128 unit/component/route tests, and the vinext production build passed through `pnpm verify`.
+- 53 PostgreSQL integration tests passed against fresh, migrated databases.
+- 29 Playwright tests passed across desktop and mobile; one desktop-only duplicate of the mobile-navigation assertion was intentionally skipped. Accessibility scans covered every primary workspace with no serious or critical violations.
+- `vinext check` reported 100% compatibility across 9 pages and 18 route handlers.
+- Both Worker dry runs passed. The web Worker upload measured 4,196.23 KiB raw / 893.17 KiB gzip; the collector measured 290.52 KiB raw / 62.90 KiB gzip.
+- The Workerd smoke test passed normal requests, 12 parallel requests, one canceled response stream, and a post-cancellation health request.
+- Database inventory p95 latency measured 14.55 ms for queries, 11.76 ms for indexes, and 4.08 ms for maintenance.
+- Synthetic 10,000-row inventory p95 latency measured 8.79 ms for queries and 9.56 ms for indexes.
+- Route p95 latency remained below the 750 ms budget; the slowest measured route was Fleet at 129.64 ms.
+- Initial client JavaScript measured 122,856 bytes gzip against a 184,320-byte budget, the SQL editor remained lazy-loaded, and measured heap growth was 105,587,400 bytes against a 167,772,160-byte budget.
+- The benchmark reported no budget failures, and CI uploads the generated performance and Worker smoke artifacts for durable inspection.

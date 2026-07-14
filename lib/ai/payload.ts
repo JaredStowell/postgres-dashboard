@@ -30,13 +30,28 @@ export interface AiIndexContext {
 }
 
 export interface AiPayloadInput {
-  query: string;
+  query?: string;
   plan?: unknown;
   tables?: AiTableContext[];
   indexes?: AiIndexContext[];
   settings?: Record<string, string | number | boolean | null>;
   statistics?: Record<string, number | string | boolean | null>;
-  context?: { database?: string; schema?: string; sourceLabel?: string };
+  context?: {
+    database?: string;
+    schema?: string;
+    sourceLabel?: string;
+    queryId?: string;
+    planId?: string;
+    relation?: string;
+    index?: string;
+    finding?: {
+      id: string;
+      category: string;
+      severity: string;
+      title: string;
+      summary: string;
+    };
+  };
 }
 
 export interface AiAdvisorPayload {
@@ -46,8 +61,23 @@ export interface AiAdvisorPayload {
     commentsRemoved: true;
     resultRowsIncluded: false;
   };
-  context: { database?: string; schema?: string; sourceLabel?: string };
-  query: string;
+  context: {
+    database?: string;
+    schema?: string;
+    sourceLabel?: string;
+    queryId?: string;
+    planId?: string;
+    relation?: string;
+    index?: string;
+    finding?: {
+      id: string;
+      category: string;
+      severity: string;
+      title: string;
+      summary: string;
+    };
+  };
+  query: string | null;
   plan: unknown | null;
   planSummary: {
     metrics: ReturnType<typeof calculatePlanMetrics>;
@@ -174,8 +204,9 @@ export function buildAiPayload(
   const maxSettings = Math.max(0, limits.maxSettings ?? 40);
   const maxStatistics = Math.max(0, limits.maxStatistics ?? 100);
   const omissions: string[] = [];
-  const redactedQuery = redactSql(input.query);
-  if (redactedQuery.length > maxQueryCharacters)
+  const redactedQuery = input.query ? redactSql(input.query) : null;
+  if (!redactedQuery) omissions.push("normalized query not available");
+  if (redactedQuery && redactedQuery.length > maxQueryCharacters)
     omissions.push("query characters");
   if ((input.tables?.length ?? 0) > maxTables) omissions.push("tables");
   if ((input.indexes?.length ?? 0) > maxIndexes) omissions.push("indexes");
@@ -205,8 +236,15 @@ export function buildAiPayload(
       database: input.context?.database,
       schema: input.context?.schema,
       sourceLabel: input.context?.sourceLabel,
+      queryId: input.context?.queryId,
+      planId: input.context?.planId,
+      relation: input.context?.relation,
+      index: input.context?.index,
+      finding: input.context?.finding,
     },
-    query: truncateString(redactedQuery, maxQueryCharacters),
+    query: redactedQuery
+      ? truncateString(redactedQuery, maxQueryCharacters)
+      : null,
     plan,
     planSummary,
     tables: (input.tables ?? []).slice(0, maxTables).map((table) => ({
@@ -264,7 +302,11 @@ export function buildAiPayload(
     payload.plan = null;
     omissions.push("plan for byte limit");
   }
-  while (utf8Bytes(payload) > maxBytes && payload.query.length > 256) {
+  while (
+    utf8Bytes(payload) > maxBytes &&
+    payload.query !== null &&
+    payload.query.length > 256
+  ) {
     payload.query = truncateString(
       payload.query,
       Math.max(256, Math.floor(payload.query.length * 0.75)),

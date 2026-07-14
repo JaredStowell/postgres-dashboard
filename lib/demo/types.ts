@@ -1,3 +1,5 @@
+import type { AiAnalysisResponse } from "@/lib/ai/schema";
+
 export type Severity = "critical" | "warning" | "info" | "success";
 
 export type TrendPoint = {
@@ -48,16 +50,27 @@ export type QueryStat = {
 };
 
 export type IndexRecord = {
+  indexOid?: number;
+  tableOid?: number;
   name: string;
   table: string;
   schema: string;
   size: string;
   sizeBytes?: number;
   scans: number;
+  tuplesRead?: number;
+  tuplesFetched?: number;
   type: string;
   status: "healthy" | "unused" | "duplicate" | "overlap" | "invalid";
   writeCost: "low" | "medium" | "high";
+  writeCostScore?: number;
+  writeCostReasons?: string[];
   definition: string;
+  keyColumns?: string[];
+  includedColumns?: string[];
+  unique?: boolean;
+  valid?: boolean;
+  ready?: boolean;
 };
 
 export type MaintenanceRecord = {
@@ -66,11 +79,26 @@ export type MaintenanceRecord = {
   schema: string;
   totalSize: string;
   totalSizeBytes?: number;
+  relationSize?: string;
+  estimatedRows?: number;
   liveRows: number;
   deadRows: number;
   deadRatio: number;
   lastVacuum: string;
   lastAnalyze: string;
+  lastManualVacuum?: string;
+  lastAutovacuum?: string;
+  lastManualAnalyze?: string;
+  lastAutoanalyze?: string;
+  modificationsSinceAnalyze?: number;
+  sequentialScans?: number;
+  sequentialTuplesRead?: number;
+  indexScans?: number | null;
+  inserted?: number;
+  updated?: number;
+  deleted?: number;
+  hotUpdated?: number;
+  relationOptions?: string[];
   freezeAge: number;
   risk: "low" | "medium" | "high";
 };
@@ -86,6 +114,8 @@ export type Session = {
   duration: string;
   query: string;
   blockedBy?: number;
+  blockingPids?: number[];
+  ageSeconds?: number;
 };
 
 export type PlanNode = {
@@ -113,4 +143,5 @@ export type Analysis = {
   summary: string;
   requestId: string;
   tokens: number;
+  result?: AiAnalysisResponse;
 };

@@ -35,7 +35,7 @@ describe("SQL classification", () => {
     expect(result).toMatchObject({ readOnly: true, singleStatement: true });
   });
 
-  it("flags known side-effecting functions for ANALYZE", () => {
+  it("uses a function-free conservative subset for ANALYZE", () => {
     expect(
       validateExplainSql("SELECT nextval('widgets_id_seq')", true),
     ).toMatchObject({
@@ -45,6 +45,23 @@ describe("SQL classification", () => {
     expect(
       validateExplainSql("SELECT nextval('widgets_id_seq')", false).readOnly,
     ).toBe(true);
+    expect(validateExplainSql("SELECT * FROM widgets", true).readOnly).toBe(
+      true,
+    );
+    expect(
+      validateExplainSql("SELECT count(*) FROM widgets", true).readOnly,
+    ).toBe(false);
+    for (const sql of [
+      "SELECT pg_terminate_backend(42)",
+      "SELECT custom_security_definer()",
+      "SELECT evil.count(*) FROM widgets",
+      'SELECT "custom_function"()',
+      "SELECT id::text FROM widgets",
+      "SELECT * FROM widgets WHERE value OPERATOR(public.=) 1",
+      "SELECT * FROM widgets WHERE value ## 1",
+    ]) {
+      expect(validateExplainSql(sql, true)).toMatchObject({ readOnly: false });
+    }
   });
 
   it("rejects unterminated SQL", () => {
@@ -77,26 +94,47 @@ describe("EXPLAIN confirmation tokens", () => {
   const secret = "a-secret-long-enough-for-hmac";
   const now = Date.parse("2026-01-01T00:00:00Z");
 
-  it("binds a short-lived token to redacted SQL", async () => {
+  it("binds a short-lived token to exact SQL, target, and schema", async () => {
     const token = await createExplainConfirmationToken(
       "SELECT * FROM x WHERE id=42",
       secret,
       now,
+      { source: "local", schema: "sales", parameters: [42] },
     );
+    await expect(
+      verifyExplainConfirmationToken(
+        token,
+        "SELECT * FROM x WHERE id=42",
+        secret,
+        { now: now + 500 },
+        { source: "local", schema: "sales", parameters: [42] },
+      ),
+    ).resolves.toBe(true);
     await expect(
       verifyExplainConfirmationToken(
         token,
         "SELECT * FROM x WHERE id=99",
         secret,
         { now: now + 500 },
+        { source: "local", schema: "sales", parameters: [42] },
       ),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
     await expect(
       verifyExplainConfirmationToken(
         token,
-        "SELECT * FROM y WHERE id=99",
+        "SELECT * FROM x WHERE id=42",
         secret,
         { now: now + 500 },
+        { source: "local", schema: "support", parameters: [42] },
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      verifyExplainConfirmationToken(
+        token,
+        "SELECT * FROM x WHERE id=42",
+        secret,
+        { now: now + 500 },
+        { source: "local", schema: "sales", parameters: [99] },
       ),
     ).resolves.toBe(false);
   });

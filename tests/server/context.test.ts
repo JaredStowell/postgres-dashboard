@@ -2,12 +2,16 @@ import { describe, expect, it } from "vitest";
 
 import type { RuntimeEnv } from "@/lib/config/env";
 import { ApiError } from "@/lib/http/api";
-import { resolveControlConnectionString, selectTarget } from "@/lib/server/context";
+import {
+  resolveControlConnectionString,
+  selectTarget,
+} from "@/lib/server/context";
 
 const env: RuntimeEnv = {
   DATABASE_URL: "postgres://local",
   SECONDARY: { connectionString: "postgres://secondary" },
-  INDEX_ANALYZER_TARGETS: "local:Local database:DATABASE_URL,reporting:Reporting:SECONDARY",
+  INDEX_ANALYZER_TARGETS:
+    "local:Local database:DATABASE_URL,reporting:Reporting:SECONDARY",
 };
 
 describe("server database context", () => {
@@ -16,7 +20,9 @@ describe("server database context", () => {
   });
 
   it("selects only allowlisted target keys", () => {
-    expect(selectTarget(env, "reporting").connectionString).toBe("postgres://secondary");
+    expect(selectTarget(env, "reporting").connectionString).toBe(
+      "postgres://secondary",
+    );
     expect(() => selectTarget(env, "DATABASE_URL")).toThrow(ApiError);
   });
 
@@ -33,4 +39,3 @@ describe("server database context", () => {
     expect(resolveControlConnectionString(env)).toBe("postgres://local");
   });
 });
-

@@ -13,6 +13,7 @@ const toneColor = {
 export function MetricCard({ metric }: { metric: Metric }) {
   const [color, soft] = toneColor[metric.tone];
   const rising = metric.trend >= 0;
+  const hasHistory = metric.points.length > 1;
   return (
     <article
       className="card metric-card"
@@ -26,13 +27,21 @@ export function MetricCard({ metric }: { metric: Metric }) {
       <div className="metric-label">{metric.label}</div>
       <div className="metric-value-row">
         <span className="metric-value number">{metric.value}</span>
-        <span className="metric-trend">
-          {rising ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
-          {Math.abs(metric.trend)}%
-        </span>
+        {hasHistory ? (
+          <span className="metric-trend">
+            {rising ? <ArrowUpRight size={11} /> : <ArrowDownRight size={11} />}
+            {Math.abs(metric.trend)}%
+          </span>
+        ) : null}
       </div>
       <div className="metric-detail">{metric.detail}</div>
-      <Sparkline values={metric.points} label={`${metric.label} trend`} />
+      {hasHistory ? (
+        <Sparkline values={metric.points} label={`${metric.label} trend`} />
+      ) : (
+        <span className="metric-history-empty">
+          Current snapshot · no trend history
+        </span>
+      )}
     </article>
   );
 }

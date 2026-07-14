@@ -7,6 +7,8 @@ dist/
 coverage/
 playwright-report/
 test-results/
+.playwright-cli/
+output/
 artifacts/
 .env
 .env.local

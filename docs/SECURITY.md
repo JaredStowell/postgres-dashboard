@@ -26,7 +26,9 @@ The route applies stricter transaction-local limits as a second layer.
 - Only one statement is accepted.
 - Plain EXPLAIN is the default.
 - ANALYZE requires a short-lived server-generated confirmation token.
-- ANALYZE accepts read-only statement classes and still warns about volatile functions.
+- The confirmation token binds the exact SQL, parameter values, target, and schema.
+- ANALYZE deliberately accepts only `SELECT *` from one verified base/materialized/partitioned table, with optional simple predicates, ordering, and `LIMIT`. Complex statements remain available to plain EXPLAIN.
+- Before planning, every relation and partition is verified to use built-in types and access methods with no RLS, expression/partial/custom indexes, or function-backed constraints. Function calls, casts, custom operator syntax, views, foreign/custom scans, and other complex forms are rejected.
 - The operation runs in `BEGIN READ ONLY`, applies local timeouts, and always rolls back.
 - There is no generic query-result endpoint and no terminate/cancel endpoint.
 
@@ -50,4 +52,3 @@ Connection strings, passwords, API keys, raw credentials, and request authorizat
 ## Hyperdrive caching
 
 Operational target bindings must have query caching disabled. Cached activity, locks, statistics, permissions, and plan inputs can be dangerously stale. Hyperdrive connection pooling remains active when query caching is disabled.
-

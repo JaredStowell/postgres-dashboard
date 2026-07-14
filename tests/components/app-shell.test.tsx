@@ -16,7 +16,7 @@ describe("AppShell", () => {
       screen.getByRole("navigation", { name: /primary/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /database/i })).toHaveValue(
-      "commerce_prod",
+      "Configured database",
     );
 
     await user.keyboard("{Meta>}k{/Meta}");

@@ -70,6 +70,10 @@ export async function completeAiAnalysis(
     outputTokens?: number;
   } = {},
 ): Promise<void> {
+  const serializedResult = JSON.stringify(input.rawStructuredResponse);
+  if (new TextEncoder().encode(serializedResult).byteLength > 256 * 1_024) {
+    throw new Error("AI structured response exceeds the 256 KiB limit");
+  }
   const client = await db.connect();
   try {
     await client.query("BEGIN");
@@ -108,7 +112,7 @@ export async function completeAiAnalysis(
         JSON.stringify(input.recommendations),
         JSON.stringify(input.validationSteps ?? []),
         input.migrationSql ?? null,
-        JSON.stringify(input.rawStructuredResponse),
+        serializedResult,
       ],
     );
     for (const [ordinal, recommendation] of input.recommendations.entries()) {
@@ -168,7 +172,12 @@ export async function listAiAnalyses(
   const page = boundedPage(input);
   const result = await db.query<Record<string, unknown>>(
     `
-    SELECT request.*, result.summary, result.severity, result.confidence, result.evidence,
+    SELECT request.id, request.source_database_id, request.explain_run_id,
+      request.created_at, request.completed_at, request.status, request.mode,
+      request.model, request.payload_digest, request.request_size_bytes,
+      request.provider_request_id, request.input_tokens, request.output_tokens,
+      request.error_code, request.error_message,
+      result.summary, result.severity, result.confidence, result.evidence,
       result.caveats, result.recommendations, result.validation_steps, result.migration_sql
     FROM index_analyzer.ai_analysis_requests request
     LEFT JOIN index_analyzer.ai_analysis_results result ON result.request_id = request.id

@@ -10,8 +10,17 @@ import { FindingsList } from "@/components/ui/findings-list";
 import { MetricCard } from "@/components/ui/metric-card";
 import { PageHeader } from "@/components/ui/page-header";
 import { DataSourceBadge } from "@/components/ui/data-source-badge";
+import { contextualHref } from "@/lib/presentation/inventory";
 
-export function FleetPage({ data }: { data?: FleetPageData }) {
+export function FleetPage({
+  data,
+  sourceKey,
+  schema,
+}: {
+  data?: FleetPageData;
+  sourceKey?: string;
+  schema?: string;
+}) {
   const metrics = data?.metrics ?? demoRepository.metrics();
   const findings = data?.findings ?? demoRepository.findings();
   const capabilities = data?.capabilities ?? demoRepository.capabilities();
@@ -31,10 +40,12 @@ export function FleetPage({ data }: { data?: FleetPageData }) {
   const healthScore = Math.max(0, 100 - critical * 18 - warning * 7);
   const coverage = data?.coverage ?? {
     databases: 0,
+    discoveredDatabases: 0,
     schemas: 0,
     queries: 0,
     tables: 0,
   };
+  const targets = data?.targets ?? [];
   const categoryScore = (category: string) =>
     Math.max(
       0,
@@ -59,11 +70,20 @@ export function FleetPage({ data }: { data?: FleetPageData }) {
         actions={
           <>
             <DataSourceBadge source={source} />
-            <a className="button" href="/">
+            <a
+              className="button"
+              href={contextualHref("/", { source: sourceKey, schema })}
+            >
               <RefreshCw />
               Refresh view
             </a>
-            <a className="button primary" href="/findings">
+            <a
+              className="button primary"
+              href={contextualHref("/findings", {
+                source: sourceKey,
+                schema,
+              })}
+            >
               Review findings <ArrowRight />
             </a>
           </>
@@ -152,13 +172,51 @@ export function FleetPage({ data }: { data?: FleetPageData }) {
           </ul>
         </Card>
       </div>
+      <Card>
+        <CardHeader
+          title="Configured database fleet"
+          subtitle="Latest durable snapshot from every explicit target binding"
+          action={<Badge tone="cyan">{targets.length} databases</Badge>}
+        />
+        <CardBody>
+          {targets.length === 0 ? (
+            <p className="card-subtitle">
+              Run the collector to populate cross-target history. Live data for
+              the selected database remains available above.
+            </p>
+          ) : (
+            <div className="info-grid">
+              {targets.map((target) => (
+                <a
+                  className="info-cell"
+                  href={contextualHref("/", { source: target.key })}
+                  key={`${target.key}:${target.database}`}
+                >
+                  <span>{target.key}</span>
+                  <strong>{target.database}</strong>
+                  <small>
+                    {(target.cacheHitRatio * 100).toFixed(1)}% cache ·{" "}
+                    {target.queries} queries · {target.activeConnections} active
+                  </small>
+                </a>
+              ))}
+            </div>
+          )}
+        </CardBody>
+      </Card>
       <div className="content-grid">
         <Card>
           <CardHeader
             title="Priority findings"
             subtitle={`${findings.filter((finding) => finding.status === "open").length} open · ordered by impact`}
             action={
-              <a className="badge cyan" href="/findings">
+              <a
+                className="badge cyan"
+                href={contextualHref("/findings", {
+                  source: sourceKey,
+                  schema,
+                })}
+              >
                 View all <ArrowRight size={11} />
               </a>
             }
@@ -170,8 +228,12 @@ export function FleetPage({ data }: { data?: FleetPageData }) {
           <CardBody>
             <div className="info-grid">
               <div className="info-cell">
-                <span>Databases</span>
+                <span>Collected databases</span>
                 <strong>{coverage.databases}</strong>
+              </div>
+              <div className="info-cell">
+                <span>Discovered databases</span>
+                <strong>{coverage.discoveredDatabases}</strong>
               </div>
               <div className="info-cell">
                 <span>Schemas</span>

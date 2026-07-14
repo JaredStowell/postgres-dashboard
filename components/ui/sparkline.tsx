@@ -39,6 +39,16 @@ export function TrendChart({
   values: number[];
   label: string;
 }) {
+  if (values.length < 2) {
+    return (
+      <div className="empty-state" style={{ minHeight: 130 }}>
+        <div>
+          <h2>No collected history yet</h2>
+          <p>The collector needs at least two usable, reset-aware snapshots.</p>
+        </div>
+      </div>
+    );
+  }
   const width = 800;
   const height = 160;
   const min = Math.min(...values);

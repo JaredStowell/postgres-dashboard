@@ -3,6 +3,7 @@ import { traversePlan } from "./plans";
 import type {
   IndexOverlap,
   IndexRecord,
+  MissingIndexCandidate,
   MissingIndexEvidence,
   PlanNode,
   WriteCostInput,
@@ -47,6 +48,11 @@ function preferredDuplicate(
   left: IndexRecord,
   right: IndexRecord,
 ): [IndexRecord, IndexRecord] {
+  const leftProtected = left.primary === true || left.constraintBacked === true;
+  const rightProtected =
+    right.primary === true || right.constraintBacked === true;
+  if (leftProtected !== rightProtected)
+    return leftProtected ? [right, left] : [left, right];
   if (left.valid !== false && right.valid === false) return [right, left];
   if (right.valid !== false && left.valid === false) return [left, right];
   const leftScans = left.scans ?? 0;
@@ -80,6 +86,9 @@ export function analyzeIndexOverlaps(indexes: IndexRecord[]): IndexOverlap[] {
         sameArray(leftInclude, rightInclude) &&
         Boolean(left.unique) === Boolean(right.unique)
       ) {
+        // Separate constraints can have the same physical definition without
+        // either being safely redundant at the schema level.
+        if (left.constraintBacked && right.constraintBacked) continue;
         const [redundant, covering] = preferredDuplicate(left, right);
         overlaps.push({
           kind: "duplicate",
@@ -87,7 +96,7 @@ export function analyzeIndexOverlaps(indexes: IndexRecord[]): IndexOverlap[] {
           coveringId: covering.id,
           confidence: 1,
           reason:
-            "Indexes have the same table, method, keys, included columns, predicate, expressions, and uniqueness.",
+            "Indexes have the same table, method, keys, included columns, predicate, expressions, and uniqueness; protected primary/constraint indexes are retained.",
         });
         continue;
       }
@@ -115,6 +124,7 @@ export function analyzeIndexOverlaps(indexes: IndexRecord[]): IndexOverlap[] {
         (key, index) => key === longerKeys[index],
       );
       if (!isPrefix) continue;
+      if (shorter.primary || shorter.constraintBacked) continue;
       // A longer non-unique index cannot preserve a shorter unique constraint.
       if (shorter.unique && !longer.unique) continue;
       const longerCoverage = new Set([
@@ -294,6 +304,66 @@ export function deriveMissingIndexEvidence(
   return [...byRelation.values()].sort(
     (left, right) => right.score - left.score,
   );
+}
+
+export interface MissingIndexCandidateOptions {
+  minimumScore?: number;
+  minimumRows?: number;
+}
+
+function simpleIndexColumn(column: string): string {
+  return normalized(column)
+    .replace(/\s+(asc|desc)(\s+nulls\s+(first|last))?$/i, "")
+    .replace(/\s+nulls\s+(first|last)$/i, "")
+    .replace(/^"|"$/g, "");
+}
+
+function indexCoversEvidence(
+  evidence: MissingIndexEvidence,
+  index: IndexRecord,
+): boolean {
+  if (
+    evidence.schema === null ||
+    normalized(evidence.schema) !== normalized(index.schema) ||
+    normalized(evidence.table) !== normalized(index.table) ||
+    normalized(index.method) !== "btree" ||
+    index.valid === false ||
+    index.ready === false ||
+    normalized(index.predicate) !== ""
+  )
+    return false;
+  const wanted = new Set(evidence.columns.map(simpleIndexColumn));
+  const leadingKeys = normalizedColumns(index.keyColumns)
+    .slice(0, wanted.size)
+    .map(simpleIndexColumn);
+  return (
+    leadingKeys.length === wanted.size &&
+    leadingKeys.every((column) => wanted.has(column))
+  );
+}
+
+export function deriveMissingIndexCandidates(
+  input: ExplainInput,
+  indexes: readonly IndexRecord[],
+  options: MissingIndexCandidateOptions = {},
+): MissingIndexCandidate[] {
+  const minimumScore = Math.max(0, Math.min(100, options.minimumScore ?? 55));
+  const minimumRows = Math.max(100, options.minimumRows ?? 1_000);
+  return deriveMissingIndexEvidence(input)
+    .filter(
+      (evidence) =>
+        evidence.score >= minimumScore &&
+        Math.max(
+          evidence.estimatedRows,
+          evidence.actualRows + evidence.rowsRemovedByFilter,
+        ) >= minimumRows &&
+        !indexes.some((index) => indexCoversEvidence(evidence, index)),
+    )
+    .map((evidence) => ({
+      ...evidence,
+      confidence: evidence.score >= 75 ? "high" : "medium",
+      recommendation: `Consider a btree index beginning with (${evidence.columns.join(", ")}) on ${evidence.schema ? `${evidence.schema}.` : ""}${evidence.table}; verify with a hypothetical or real EXPLAIN before creation.`,
+    }));
 }
 
 export const findDuplicateIndexes = analyzeIndexOverlaps;

@@ -102,6 +102,57 @@ export async function listLatestFleetSnapshots(
   }));
 }
 
+export interface FleetTrendPoint {
+  capturedAt: Date;
+  totalExecTime: number;
+  totalCalls: number;
+  activeConnections: number;
+  cacheHitRatio: number;
+  deadRows: number;
+}
+
+export async function listFleetTrend(
+  db: Queryable,
+  sourceDatabaseId: number,
+  limit = 24,
+): Promise<FleetTrendPoint[]> {
+  if (!Number.isSafeInteger(sourceDatabaseId) || sourceDatabaseId <= 0)
+    throw new Error("Invalid source database ID");
+  const boundedLimit = Math.min(100, Math.max(2, Math.trunc(limit)));
+  const result = await db.query<Record<string, unknown>>(
+    `
+      SELECT cr.started_at,
+        COALESCE(q.total_exec_time, 0) AS total_exec_time,
+        COALESCE(q.total_calls, 0) AS total_calls,
+        ds.active_connections,
+        CASE WHEN ds.blks_hit + ds.blks_read = 0 THEN 1
+          ELSE ds.blks_hit::numeric / (ds.blks_hit + ds.blks_read) END AS cache_hit_ratio,
+        COALESCE(t.dead_rows, 0) AS dead_rows
+      FROM index_analyzer.collection_runs cr
+      JOIN index_analyzer.database_snapshots ds ON ds.collection_run_id = cr.id
+      LEFT JOIN LATERAL (
+        SELECT sum(total_exec_time) AS total_exec_time, sum(calls) AS total_calls
+        FROM index_analyzer.query_snapshots WHERE collection_run_id = cr.id
+      ) q ON true
+      LEFT JOIN LATERAL (
+        SELECT sum(dead_rows) AS dead_rows
+        FROM index_analyzer.table_snapshots WHERE collection_run_id = cr.id
+      ) t ON true
+      WHERE cr.source_database_id = $1 AND cr.status = 'succeeded'
+      ORDER BY cr.started_at DESC LIMIT $2
+    `,
+    [sourceDatabaseId, boundedLimit],
+  );
+  return result.rows.reverse().map((row) => ({
+    capturedAt: new Date(String(row["started_at"])),
+    totalExecTime: toNumber(row["total_exec_time"]),
+    totalCalls: toNumber(row["total_calls"]),
+    activeConnections: toNumber(row["active_connections"]),
+    cacheHitRatio: toNumber(row["cache_hit_ratio"]),
+    deadRows: toNumber(row["dead_rows"]),
+  }));
+}
+
 export async function listQueryHistory(
   db: Queryable,
   sourceDatabaseId: number,
@@ -119,6 +170,7 @@ export async function listQueryHistory(
     FROM index_analyzer.query_snapshots qs
     JOIN index_analyzer.collection_runs cr ON cr.id = qs.collection_run_id
     WHERE cr.source_database_id = $1 AND qs.query_id = $2
+      AND cr.status = 'succeeded'
     ORDER BY cr.started_at DESC
     LIMIT $3 OFFSET $4
   `,
@@ -165,33 +217,70 @@ export async function getQueryRegressionWindows(
   }
   const result = await db.query<Record<string, unknown>>(
     `
-    WITH sampled AS (
+    WITH candidate_runs AS (
       SELECT cr.id, cr.started_at, cr.reset_detected,
+        row_number() OVER (ORDER BY cr.started_at DESC, cr.id DESC) AS run_rank
+      FROM index_analyzer.collection_runs cr
+      WHERE cr.source_database_id = $1 AND cr.status = 'succeeded'
+      ORDER BY cr.started_at DESC, cr.id DESC
+      LIMIT $3
+    ), sampled AS (
+      SELECT cr.id, cr.started_at, cr.reset_detected, cr.run_rank,
         sum(qs.calls)::bigint AS calls,
         sum(qs.total_exec_time)::float8 AS total_exec_time,
-        sum(qs.rows)::bigint AS rows
-      FROM index_analyzer.collection_runs cr
+        sum(qs.rows)::bigint AS rows,
+        max(qs.stats_since) AS stats_since,
+        max(qs.minmax_stats_since) AS minmax_stats_since
+      FROM candidate_runs cr
       JOIN index_analyzer.query_snapshots qs ON qs.collection_run_id = cr.id
-      WHERE cr.source_database_id = $1 AND qs.query_id = $2 AND cr.status = 'succeeded'
-      GROUP BY cr.id, cr.started_at, cr.reset_detected
-      ORDER BY cr.started_at DESC
-      LIMIT $3
+      WHERE qs.query_id = $2
+      GROUP BY cr.id, cr.started_at, cr.reset_detected, cr.run_rank
+    ), raw_ordered AS (
+      SELECT *, lag(calls) OVER (ORDER BY started_at) AS raw_previous_calls,
+        lag(run_rank) OVER (ORDER BY started_at) AS raw_previous_run_rank,
+        lag(total_exec_time) OVER (ORDER BY started_at) AS raw_previous_exec_time,
+        lag(rows) OVER (ORDER BY started_at) AS raw_previous_rows,
+        lag(stats_since) OVER (ORDER BY started_at) AS raw_previous_stats_since,
+        lag(minmax_stats_since) OVER (ORDER BY started_at) AS raw_previous_minmax_stats_since
+      FROM sampled
+    ), boundary_marked AS (
+      SELECT *, reset_detected OR
+        (raw_previous_calls IS NOT NULL AND (
+          raw_previous_run_rank <> run_rank + 1
+          OR calls < raw_previous_calls OR total_exec_time < raw_previous_exec_time
+          OR rows < raw_previous_rows
+          OR stats_since IS DISTINCT FROM raw_previous_stats_since
+          OR minmax_stats_since IS DISTINCT FROM raw_previous_minmax_stats_since
+        )) AS epoch_boundary
+      FROM raw_ordered
+    ), epoch_marked AS (
+      SELECT *, COALESCE(
+        sum(CASE WHEN epoch_boundary THEN 1 ELSE 0 END) OVER (
+          ORDER BY started_at DESC
+          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ), 0
+      ) AS older_reset_boundaries
+      FROM boundary_marked
+    ), epoch_samples AS (
+      SELECT * FROM epoch_marked WHERE older_reset_boundaries = 0
     ), ordered AS (
       SELECT *, lag(calls) OVER (ORDER BY started_at) AS previous_calls,
         lag(total_exec_time) OVER (ORDER BY started_at) AS previous_exec_time,
         lag(rows) OVER (ORDER BY started_at) AS previous_rows
-      FROM sampled
+      FROM epoch_samples
     ), deltas AS (
       SELECT *, calls - previous_calls AS calls_delta,
         total_exec_time - previous_exec_time AS exec_delta,
         rows - previous_rows AS rows_delta,
-        reset_detected OR previous_calls IS NULL OR calls < previous_calls
+        epoch_boundary OR previous_calls IS NULL OR calls < previous_calls
           OR total_exec_time < previous_exec_time OR rows < previous_rows AS unusable,
         row_number() OVER (ORDER BY started_at DESC) AS recency
       FROM ordered
     )
     SELECT
-      count(*) FILTER (WHERE unusable) AS reset_samples_discarded,
+      count(*) FILTER (WHERE unusable) +
+        (SELECT count(*) FROM epoch_marked WHERE older_reset_boundaries > 0)
+        AS reset_samples_discarded,
       count(*) FILTER (WHERE NOT unusable AND recency <= $4) AS recent_sample_count,
       COALESCE(sum(calls_delta) FILTER (WHERE NOT unusable AND recency <= $4), 0) AS recent_calls,
       COALESCE(sum(exec_delta) FILTER (WHERE NOT unusable AND recency <= $4), 0) AS recent_exec,

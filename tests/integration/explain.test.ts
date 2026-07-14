@@ -26,15 +26,29 @@ describe("safe EXPLAIN execution", () => {
     expect(Array.isArray(result.plan)).toBe(true);
   });
 
+  it("applies a safely quoted transaction-local schema context", async () => {
+    const result = await runExplain(database.pool, {
+      sql: "SELECT count(*) FROM orders",
+      schema: "sales",
+    });
+    expect(result.plan).toBeTruthy();
+    await expect(
+      runExplain(database.pool, {
+        sql: "SELECT count(*) FROM orders",
+        schema: "schema_that_does_not_exist",
+      }),
+    ).rejects.toThrow(/orders/i);
+  });
+
   it("requires an exact confirmation before executing ANALYZE", async () => {
     await expect(
       runExplain(database.pool, {
-        sql: "SELECT count(*) FROM sales.orders",
+        sql: "SELECT * FROM sales.orders WHERE id > 0 LIMIT 5",
         analyze: true,
       }),
     ).rejects.toThrow("requires confirmation");
     const result = await runExplain(database.pool, {
-      sql: "SELECT count(*) FROM sales.orders",
+      sql: "SELECT * FROM sales.orders WHERE id > 0 LIMIT 5",
       analyze: true,
       confirmation: EXPLAIN_ANALYZE_CONFIRMATION,
       statementTimeoutMs: 2_000,
@@ -69,6 +83,25 @@ describe("safe EXPLAIN execution", () => {
         analyze: true,
         confirmation: EXPLAIN_ANALYZE_CONFIRMATION,
       }),
-    ).rejects.toThrow(/read-only transaction/i);
+    ).rejects.toThrow(/function calls/i);
+  });
+
+  it("rejects unsafe views before PostgreSQL can plan their immutable code", async () => {
+    await database.pool.query(`
+      CREATE OR REPLACE FUNCTION public.fixture_planner_bomb() RETURNS boolean
+      LANGUAGE plpgsql IMMUTABLE AS $$
+      BEGIN RAISE EXCEPTION 'planner bomb executed'; END $$
+    `);
+    await database.pool.query(`
+      CREATE OR REPLACE VIEW public.fixture_unsafe_view AS
+      SELECT * FROM sales.orders WHERE public.fixture_planner_bomb()
+    `);
+    await expect(
+      runExplain(database.pool, {
+        sql: "SELECT * FROM public.fixture_unsafe_view",
+        analyze: true,
+        confirmation: EXPLAIN_ANALYZE_CONFIRMATION,
+      }),
+    ).rejects.toThrow(/base storage/i);
   });
 });

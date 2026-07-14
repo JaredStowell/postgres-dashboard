@@ -27,11 +27,33 @@ export interface ApiErrorBody {
   };
 }
 
+export function assertJsonByteSize(
+  value: unknown,
+  options: { maxBytes: number; code: string; message: string },
+): number {
+  const bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
+  if (bytes > options.maxBytes) {
+    throw new ApiError(413, options.code, options.message);
+  }
+  return bytes;
+}
+
 export function jsonResponse<T>(body: T, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
   headers.set("content-type", "application/json; charset=utf-8");
   headers.set("cache-control", "no-store");
-  return new Response(JSON.stringify(body), { ...init, headers });
+  const serialized = JSON.stringify(body);
+  const bytes = new TextEncoder().encode(serialized).byteLength;
+  const maximumBytes = 4 * 1_024 * 1_024;
+  if (bytes > maximumBytes) {
+    throw new ApiError(
+      413,
+      "response_too_large",
+      `The bounded response exceeds ${maximumBytes} bytes. Narrow the request or export a smaller scope.`,
+    );
+  }
+  headers.set("content-length", String(bytes));
+  return new Response(serialized, { ...init, headers });
 }
 
 export function errorResponse(error: unknown): Response {
@@ -61,10 +83,16 @@ export function errorResponse(error: unknown): Response {
     );
   }
 
-  const message =
-    error instanceof Error ? error.message : "Unexpected server error";
+  console.error("Unhandled API error", {
+    name: error instanceof Error ? error.name : typeof error,
+  });
   return jsonResponse<ApiErrorBody>(
-    { error: { code: "internal_error", message } },
+    {
+      error: {
+        code: "internal_error",
+        message: "Unexpected server error.",
+      },
+    },
     { status: 500 },
   );
 }

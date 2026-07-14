@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CheckCircle2, Download, Filter, Search } from "lucide-react";
+import { Bot, CheckCircle2, Download, Filter, Search } from "lucide-react";
 import { demoRepository } from "@/lib/demo/data";
 import type { Finding, Severity } from "@/lib/demo/types";
 import type { DataSourceState } from "@/lib/server/dashboard-data";
@@ -11,6 +11,7 @@ import { FindingsList } from "@/components/ui/findings-list";
 import { MetricCard } from "@/components/ui/metric-card";
 import { PageHeader } from "@/components/ui/page-header";
 import { DataSourceBadge } from "@/components/ui/data-source-badge";
+import { contextualHref } from "@/lib/presentation/inventory";
 
 export function FindingsPage({
   findings: initialFindings = demoRepository.findings(),
@@ -19,9 +20,15 @@ export function FindingsPage({
     label: "Sample preview",
     detail: "No database data was supplied.",
   },
+  sourceKey,
+  schema,
+  enabledRules = 0,
 }: {
   findings?: Finding[];
   source?: DataSourceState;
+  sourceKey?: string;
+  schema?: string;
+  enabledRules?: number;
 }) {
   const [search, setSearch] = useState("");
   const [severity, setSeverity] = useState<Severity | "all">("all");
@@ -29,6 +36,9 @@ export function FindingsPage({
   const [findings, setFindings] = useState(initialFindings);
   const [note, setNote] = useState("");
   const [actionStatus, setActionStatus] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    initialFindings[0]?.id ?? null,
+  );
   const filtered = useMemo(
     () =>
       findings.filter(
@@ -43,7 +53,12 @@ export function FindingsPage({
       ),
     [activeOnly, findings, search, severity],
   );
-  const selected = filtered[0];
+  const contextualFindings = filtered.map((finding) => ({
+    ...finding,
+    href: contextualHref(finding.href, { source: sourceKey, schema }),
+  }));
+  const selected =
+    filtered.find((finding) => finding.id === selectedId) ?? filtered[0];
   const active = findings.filter(
     (finding) => finding.status === "open" || finding.status === "acknowledged",
   );
@@ -54,7 +69,7 @@ export function FindingsPage({
       detail: `${active.filter((finding) => finding.severity === "critical").length} critical · ${active.filter((finding) => finding.severity === "warning").length} warning`,
       trend: 0,
       tone: "rose" as const,
-      points: [72, 70, 68, 64, 66, 61, 58, 56, 52, 49, 46, 43],
+      points: [],
     },
     {
       label: "New today",
@@ -69,7 +84,7 @@ export function FindingsPage({
       detail: "Observed in the last day",
       trend: 0,
       tone: "amber" as const,
-      points: [10, 10, 10, 18, 18, 25, 25, 33, 40, 48, 55, 62],
+      points: [],
     },
     {
       label: "Resolved · 7d",
@@ -79,15 +94,15 @@ export function FindingsPage({
       detail: "In the loaded history",
       trend: 0,
       tone: "green" as const,
-      points: [20, 24, 29, 32, 38, 41, 47, 51, 55, 60, 66, 72],
+      points: [],
     },
     {
       label: "Rules enabled",
-      value: "9",
+      value: String(enabledRules),
       detail: "Seeded detection contracts",
       trend: 0,
       tone: "violet" as const,
-      points: [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50],
+      points: [],
     },
   ];
   const updateStatus = async (finding: Finding, status: Finding["status"]) => {
@@ -154,7 +169,7 @@ export function FindingsPage({
               Export
             </button>
             <span className="button" style={{ cursor: "default" }}>
-              <Badge tone="violet">9 rules enabled</Badge>
+              <Badge tone="violet">{enabledRules} rules enabled</Badge>
             </span>
           </>
         }
@@ -204,7 +219,15 @@ export function FindingsPage({
             title="Active queue"
             subtitle={`${filtered.length} visible`}
           />
-          <FindingsList findings={filtered} detailed />
+          <FindingsList
+            findings={contextualFindings}
+            detailed
+            selectedId={selected?.id}
+            onSelect={(finding) => {
+              setSelectedId(finding.id);
+              setActionStatus(null);
+            }}
+          />
         </Card>
         <div style={{ display: "grid", gap: 12, alignContent: "start" }}>
           {selected ? (
@@ -264,6 +287,17 @@ export function FindingsPage({
                     <CheckCircle2 />
                     Acknowledge
                   </button>
+                  <a
+                    className="button"
+                    href={contextualHref("/advisor", {
+                      source: sourceKey,
+                      schema,
+                      parameters: { findingId: selected.id },
+                    })}
+                  >
+                    <Bot />
+                    Analyze with AI
+                  </a>
                   <button
                     className="button"
                     onClick={() => void updateStatus(selected, "dismissed")}

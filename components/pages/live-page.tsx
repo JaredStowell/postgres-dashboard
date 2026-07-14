@@ -13,6 +13,7 @@ import { DataSourceBadge } from "@/components/ui/data-source-badge";
 
 export function LivePage({
   initialSessions = demoRepository.sessions(),
+  sourceKey,
   source = {
     mode: "unavailable",
     label: "Sample preview",
@@ -21,17 +22,26 @@ export function LivePage({
 }: {
   initialSessions?: Session[];
   source?: DataSourceState;
+  sourceKey?: string;
 }) {
   const [paused, setPaused] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [sessions, setSessions] = useState(initialSessions);
+  const [stateFilter, setStateFilter] = useState("all");
+  const [userFilter, setUserFilter] = useState("");
+  const [waitFilter, setWaitFilter] = useState("all");
+  const [minimumAge, setMinimumAge] = useState(0);
   useEffect(() => {
     if (paused) return;
+    let requestInFlight = false;
     const interval = window.setInterval(() => {
       setSeconds((value) => {
         const next = (value + 1) % 5;
-        if (next === 0 && source.mode === "live") {
-          void fetch("/api/activity?limit=250", { cache: "no-store" })
+        if (next === 0 && source.mode === "live" && !requestInFlight) {
+          requestInFlight = true;
+          const parameters = new URLSearchParams({ limit: "250" });
+          if (sourceKey) parameters.set("source", sourceKey);
+          void fetch(`/api/activity?${parameters}`, { cache: "no-store" })
             .then(
               async (response) =>
                 (await response.json()) as {
@@ -73,23 +83,51 @@ export function LivePage({
                     .toString()
                     .padStart(2, "0")}`,
                   query: String(row.queryPreview ?? ""),
+                  ageSeconds: Math.max(
+                    Number(row.transactionAgeSeconds ?? 0),
+                    Number(row.queryAgeSeconds ?? 0),
+                  ),
+                  blockingPids: Array.isArray(row.blockingProcessIds)
+                    ? row.blockingProcessIds.map(Number).filter(Number.isFinite)
+                    : [],
                   blockedBy: Array.isArray(row.blockingProcessIds)
                     ? Number(row.blockingProcessIds[0]) || undefined
                     : undefined,
                 })),
               );
             })
-            .catch(() => undefined);
+            .catch(() => undefined)
+            .finally(() => {
+              requestInFlight = false;
+            });
         }
         return next;
       });
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [initialSessions, paused, source.mode]);
+  }, [initialSessions, paused, source.mode, sourceKey]);
+  const visibleSessions = sessions.filter(
+    (session) =>
+      (stateFilter === "all" || session.state === stateFilter) &&
+      (!userFilter ||
+        `${session.user} ${session.application}`
+          .toLowerCase()
+          .includes(userFilter.toLowerCase())) &&
+      (waitFilter === "all" ||
+        (waitFilter === "waiting"
+          ? session.wait !== "—"
+          : session.wait === "—")) &&
+      (session.ageSeconds ?? 0) >= minimumAge,
+  );
   const active = sessions.filter((session) => session.state === "active");
   const waiting = sessions.filter((session) => session.wait !== "—");
   const blocked = sessions.filter((session) => session.blockedBy !== undefined);
   const blockedSession = blocked[0];
+  const blockingEdges = sessions.flatMap((session) =>
+    (
+      session.blockingPids ?? (session.blockedBy ? [session.blockedBy] : [])
+    ).map((blocker) => ({ blocker, blocked: session.pid, session })),
+  );
   const blockerSession = blockedSession
     ? sessions.find((session) => session.pid === blockedSession.blockedBy)
     : undefined;
@@ -103,7 +141,7 @@ export function LivePage({
       detail: `of ${sessions.length} visible sessions`,
       trend: 0,
       tone: "cyan" as const,
-      points: [24, 26, 25, 28, 31, 29, 33, 35, 32, 36, 34, 35],
+      points: [],
     },
     {
       label: "Waiting",
@@ -111,7 +149,7 @@ export function LivePage({
       detail: `${waiting.filter((session) => session.wait.startsWith("Lock")).length} lock · ${waiting.filter((session) => session.wait.startsWith("IO")).length} I/O`,
       trend: 0,
       tone: "amber" as const,
-      points: [10, 10, 14, 14, 18, 20, 24, 28, 32, 38, 44, 50],
+      points: [],
     },
     {
       label: "Blocked",
@@ -121,7 +159,7 @@ export function LivePage({
         : "No blocking edges",
       trend: 0,
       tone: "rose" as const,
-      points: [0, 0, 0, 0, 0, 0, 10, 10, 10, 40, 50, 60],
+      points: [],
     },
     {
       label: "Oldest transaction",
@@ -129,7 +167,7 @@ export function LivePage({
       detail: oldest?.state ?? "No sessions",
       trend: 0,
       tone: "violet" as const,
-      points: [35, 38, 41, 44, 47, 50, 53, 56, 59, 62, 65, 68],
+      points: [],
     },
   ];
   return (
@@ -164,40 +202,29 @@ export function LivePage({
         <Card>
           <CardHeader
             title="Blocking graph"
-            subtitle={`${blocked.length} edge${blocked.length === 1 ? "" : "s"} · ${sessions.length} sessions`}
+            subtitle={`${blockingEdges.length} edge${blockingEdges.length === 1 ? "" : "s"} · ${sessions.length} sessions`}
             action={
               <Badge tone={blocked.length > 0 ? "rose" : "green"}>
                 {blocked.length > 0 ? "Active incident" : "Clear"}
               </Badge>
             }
           />
-          {blockedSession ? (
-            <div
-              className="blocking-graph"
-              aria-label={`PID ${blockedSession.blockedBy} is blocking PID ${blockedSession.pid}`}
-            >
-              <span className="block-line" />
-              <div className="session-node blocker">
-                <Badge tone="amber">Blocker</Badge>
-                <strong style={{ marginTop: 8 }}>
-                  PID {blockedSession.blockedBy}
-                </strong>
-                <span>
-                  {blockerSession?.user ?? "not visible"} ·{" "}
-                  {blockerSession?.duration ?? "unknown"}
-                </span>
-                <span>{blockerSession?.state ?? "outside current result"}</span>
-              </div>
-              <div className="session-node blocked">
-                <Badge tone="rose">Blocked</Badge>
-                <strong style={{ marginTop: 8 }}>
-                  PID {blockedSession.pid}
-                </strong>
-                <span>
-                  {blockedSession.user} · {blockedSession.duration}
-                </span>
-                <span>{blockedSession.wait}</span>
-              </div>
+          {blockingEdges.length > 0 ? (
+            <div className="analysis-list" style={{ padding: 12 }}>
+              {blockingEdges.map((edge) => (
+                <div
+                  className="privacy-note"
+                  aria-label={`PID ${edge.blocker} is blocking PID ${edge.blocked}`}
+                  key={`${edge.blocker}:${edge.blocked}`}
+                >
+                  <Badge tone="amber">PID {edge.blocker}</Badge>
+                  <span>blocks</span>
+                  <Badge tone="rose">PID {edge.blocked}</Badge>
+                  <span style={{ marginLeft: "auto" }}>
+                    {edge.session.wait}
+                  </span>
+                </div>
+              ))}
             </div>
           ) : (
             <div className="empty-state">
@@ -211,7 +238,7 @@ export function LivePage({
         <Card>
           <CardHeader
             title="Incident guidance"
-            subtitle="Evidence from pg_locks"
+            subtitle="Evidence from pg_blocking_pids()"
           />
           <CardBody>
             <div className="analysis-list">
@@ -267,7 +294,50 @@ export function LivePage({
             </Badge>
           </div>
         </div>
-        <div className="table-scroll">
+        <div className="toolbar">
+          <select
+            className="context-select"
+            aria-label="Filter session state"
+            value={stateFilter}
+            onChange={(event) => setStateFilter(event.target.value)}
+          >
+            <option value="all">All states</option>
+            <option value="active">Active</option>
+            <option value="idle">Idle</option>
+            <option value="idle in transaction">Idle in transaction</option>
+          </select>
+          <input
+            className="input"
+            aria-label="Filter session user or application"
+            placeholder="User or application…"
+            value={userFilter}
+            onChange={(event) => setUserFilter(event.target.value)}
+          />
+          <select
+            className="context-select"
+            aria-label="Filter wait state"
+            value={waitFilter}
+            onChange={(event) => setWaitFilter(event.target.value)}
+          >
+            <option value="all">All waits</option>
+            <option value="waiting">Waiting</option>
+            <option value="not-waiting">Not waiting</option>
+          </select>
+          <input
+            className="input"
+            type="number"
+            min="0"
+            max="86400"
+            aria-label="Minimum session age seconds"
+            value={minimumAge}
+            onChange={(event) => setMinimumAge(Number(event.target.value) || 0)}
+          />
+        </div>
+        <div
+          className="table-scroll"
+          tabIndex={0}
+          aria-label="Live sessions table, horizontally scrollable"
+        >
           <table className="data-table">
             <thead>
               <tr>
@@ -281,7 +351,7 @@ export function LivePage({
               </tr>
             </thead>
             <tbody>
-              {sessions.map((session) => (
+              {visibleSessions.map((session) => (
                 <tr key={session.pid}>
                   <td className="number">{session.pid}</td>
                   <td>

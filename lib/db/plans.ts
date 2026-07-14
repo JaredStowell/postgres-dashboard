@@ -81,9 +81,10 @@ export async function listExplainRuns(
   const page = boundedPage(input);
   const result = await db.query<Record<string, unknown>>(
     `
-    SELECT id, created_at, created_by, query_digest, normalized_query, parameter_types,
-      analyze_enabled, statement_timeout_ms, plan_json, planning_time_ms, execution_time_ms,
-      sanitized_export, metadata
+    SELECT id, created_at, created_by, query_digest,
+      left(normalized_query, 2000) AS normalized_query, parameter_types,
+      analyze_enabled, statement_timeout_ms, planning_time_ms, execution_time_ms,
+      metadata, pg_column_size(plan_json) AS plan_bytes
     FROM index_analyzer.explain_runs
     WHERE source_database_id = $1 AND ($2::text IS NULL OR query_digest = $2)
     ORDER BY created_at DESC LIMIT $3 OFFSET $4

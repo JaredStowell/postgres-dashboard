@@ -14,9 +14,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      DATABASE_URL: postgres://index_analyzer:index_analyzer@127.0.0.1:55432/index_analyzer
+      DATABASE_URL: postgres://index_analyzer:index_analyzer@127.0.0.1:55433/index_analyzer
+      CONTROL_DATABASE_URL: postgres://index_analyzer:index_analyzer@127.0.0.1:55433/index_analyzer
       INDEX_ANALYZER_TARGETS: local:Local PostgreSQL:DATABASE_URL
       AI_MOCK_MODE: "true"
+      EXPLAIN_CONFIRMATION_SECRET: ci-explain-confirmation-secret
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -33,8 +35,17 @@ jobs:
       - run: pnpm test
       - run: pnpm db:setup
       - run: pnpm test:integration
+      - run: pnpm collect
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e --project=chromium
-      - run: pnpm build
+      - run: pnpm benchmark
+      - run: pnpm smoke:worker
       - run: pnpm deploy:dry
-
+      - run: pnpm collector:dry
+      - name: Upload verification artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: index-analyzer-verification
+          path: artifacts/
+          if-no-files-found: warn

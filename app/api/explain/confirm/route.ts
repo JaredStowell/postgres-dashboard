@@ -7,9 +7,19 @@ import { ApiError, jsonResponse, parseJson, route } from "@/lib/http/api";
 import { getRuntimeEnv } from "@/lib/runtime/env";
 import { z } from "zod";
 
+const parameterSchema = z.union([
+  z.string().max(20_000),
+  z.number().finite(),
+  z.boolean(),
+  z.null(),
+]);
+
 const requestSchema = z
   .object({
+    source: z.string().min(1).max(63).optional(),
+    schema: z.string().min(1).max(255).optional(),
     sql: z.string().min(1).max(50_000),
+    parameters: z.array(parameterSchema).max(100).default([]),
     acknowledgement: z.literal("RUN EXPLAIN ANALYZE"),
   })
   .strict();
@@ -34,7 +44,16 @@ export const POST = route(async (request: Request) => {
       "EXPLAIN ANALYZE confirmation is not configured.",
     );
   }
-  const token = await createExplainConfirmationToken(input.sql, secret);
+  const token = await createExplainConfirmationToken(
+    input.sql,
+    secret,
+    Date.now(),
+    {
+      source: input.source,
+      schema: input.schema,
+      parameters: input.parameters,
+    },
+  );
   return jsonResponse({
     token,
     expiresInMs: 60_000,

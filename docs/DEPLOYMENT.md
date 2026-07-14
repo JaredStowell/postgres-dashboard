@@ -40,10 +40,27 @@ Never use Hyperdrive's default query caching for diagnostic bindings. Freshness 
 ## Worker secrets and variables
 
 ```bash
+npx wrangler secret put EXPLAIN_CONFIRMATION_SECRET
 npx wrangler secret put OPENAI_API_KEY
 ```
 
+Generate the EXPLAIN confirmation secret with at least 48 random bytes and paste
+only the generated value into Wrangler's interactive prompt:
+
+```bash
+openssl rand -base64 48
+```
+
+Do not reuse the local development value. Before deployment, verify the secret
+exists for the web Worker and that a guarded ANALYZE confirmation token issued
+with an old secret is rejected after rotation.
+
 Set the balanced and deep model names as Worker variables. Keep AI mock mode disabled in production.
+
+The scheduled collector retains 14 days and at most 5,000 runs per database by
+default. Tune `COLLECTION_RETENTION_DAYS` and `COLLECTION_MAX_RUNS` together for
+the expected database count and collection frequency; both successful and
+failed runs are pruned, with snapshot children removed by foreign-key cascade.
 
 ## Access control
 
@@ -57,7 +74,9 @@ pnpm verify
 pnpm test:integration
 pnpm test:e2e
 pnpm vinext:check
+pnpm smoke:worker
 pnpm deploy:dry
+pnpm collector:dry
 pnpm benchmark
 ```
 
@@ -65,11 +84,14 @@ Review the generated bundle, Wrangler binding summary, capability matrix against
 
 ## Deployment
 
-After replacing resource IDs and authenticating Wrangler:
+After replacing resource IDs and authenticating Wrangler, build and deploy the
+request-scoped web adapter. Do not point Wrangler directly at
+`dist/server/index.js`; that bypasses the Hyperdrive pool lifecycle boundary.
 
 ```bash
-npx @vinext/cloudflare deploy
+pnpm build
+npx wrangler deploy worker/web.mjs --assets dist/client --config wrangler.jsonc
+npx wrangler deploy --config wrangler.collector.jsonc
 ```
 
 Run the post-deployment smoke flow against the protected custom domain: Fleet, Queries, plain EXPLAIN, guarded ANALYZE on a harmless query, Indexes, Maintenance, Live, collection, and an AI analysis.
-

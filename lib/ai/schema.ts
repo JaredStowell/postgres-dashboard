@@ -11,7 +11,15 @@ export const aiSeveritySchema = z.enum([
 export const aiEvidenceSchema = z
   .object({
     claim: z.string().min(1).max(2_000),
-    source: z.enum(["query", "plan", "table", "index", "statistic", "setting"]),
+    source: z.enum([
+      "query",
+      "plan",
+      "table",
+      "index",
+      "statistic",
+      "setting",
+      "finding",
+    ]),
     reference: z.string().min(1).max(500),
   })
   .strict();

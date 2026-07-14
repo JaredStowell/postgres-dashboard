@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Bot,
   Check,
@@ -12,8 +12,8 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
-import { analyses as demoAnalyses, queries } from "@/lib/demo/data";
 import type { AiAnalysisResponse } from "@/lib/ai/schema";
+import type { AiPayloadInput } from "@/lib/ai/payload";
 import type { Analysis } from "@/lib/demo/types";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
@@ -29,58 +29,141 @@ type Preview = {
   model: string;
 };
 
+type AdvisorContext = {
+  ready: boolean;
+  source: { key: string; label: string; database: string };
+  sourceDatabaseId: number | null;
+  selection: {
+    queryId?: string;
+    findingId?: number;
+    planId?: string;
+    relation?: string;
+    index?: string;
+  };
+  evidence: {
+    queryOrigin: "live" | "history" | "plan" | null;
+    historySamples: number;
+    planMatch: "explicit" | "query-shape" | null;
+    tables: string[];
+    indexes: number;
+    settings: number;
+  };
+  omissions: string[];
+  input: AiPayloadInput & {
+    source?: string;
+    sourceDatabaseId?: number;
+    explainRunId?: string;
+  };
+};
+
 export function AdvisorWorkspace({
-  analyses = demoAnalyses,
+  analyses = [],
+  sourceKey,
+  queryId,
+  findingId,
+  planId,
+  relationSchema,
+  relationTable,
+  index,
 }: {
   analyses?: Analysis[];
+  sourceKey?: string;
+  queryId?: string;
+  findingId?: string;
+  planId?: string;
+  relationSchema?: string;
+  relationTable?: string;
+  index?: string;
 }) {
   const [mode, setMode] = useState<"balanced" | "deep">("balanced");
   const [showPayload, setShowPayload] = useState(false);
   const [state, setState] = useState<"ready" | "working" | "done">("ready");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [analysis, setAnalysis] = useState<AiAnalysisResponse | null>(null);
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(
+    null,
+  );
   const [metadata, setMetadata] = useState<{
     model?: string;
     providerRequestId?: string | null;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [advisorContext, setAdvisorContext] = useState<AdvisorContext | null>(
+    null,
+  );
+  const [contextState, setContextState] = useState<
+    "loading" | "ready" | "missing" | "error"
+  >("loading");
+
+  const loadContext = useCallback(async (): Promise<AdvisorContext> => {
+    const search = new URLSearchParams();
+    if (sourceKey) search.set("source", sourceKey);
+    if (queryId) search.set("queryId", queryId);
+    if (findingId) search.set("findingId", findingId);
+    if (planId) search.set("planId", planId);
+    if (relationSchema) search.set("relationSchema", relationSchema);
+    if (relationTable) search.set("relationTable", relationTable);
+    if (index) search.set("index", index);
+    if (
+      !queryId &&
+      !findingId &&
+      !planId &&
+      !(relationSchema && relationTable)
+    ) {
+      setContextState("missing");
+      throw new Error(
+        "Select a query, finding, saved plan, or catalog relation before requesting analysis.",
+      );
+    }
+    setContextState("loading");
+    const response = await fetch(`/api/advisor/context?${search.toString()}`, {
+      cache: "no-store",
+    });
+    const body = (await response.json()) as AdvisorContext & {
+      error?: { message?: string };
+    };
+    if (!response.ok || !body.input)
+      throw new Error(
+        body.error?.message ?? "Advisor evidence could not be assembled.",
+      );
+    setAdvisorContext(body);
+    setContextState(body.ready ? "ready" : "missing");
+    return body;
+  }, [
+    findingId,
+    index,
+    planId,
+    queryId,
+    relationSchema,
+    relationTable,
+    sourceKey,
+  ]);
+
+  useEffect(() => {
+    if (
+      !queryId &&
+      !findingId &&
+      !planId &&
+      !(relationSchema && relationTable)
+    ) {
+      setContextState("missing");
+      return;
+    }
+    void loadContext().catch((caught) => {
+      setContextState("error");
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "Advisor evidence could not be assembled.",
+      );
+    });
+  }, [findingId, loadContext, planId, queryId, relationSchema, relationTable]);
 
   const requestInput = async () => {
-    const [queryResponse, indexResponse, healthResponse] = await Promise.all([
-      fetch("/api/queries?limit=1", { cache: "no-store" }),
-      fetch("/api/indexes?limit=100", { cache: "no-store" }),
-      fetch("/api/health", { cache: "no-store" }),
-    ]);
-    const queryBody = (await queryResponse.json()) as {
-      queries?: Array<Record<string, unknown>>;
-    };
-    const indexBody = (await indexResponse.json()) as {
-      indexes?: Array<Record<string, unknown>>;
-    };
-    const healthBody = (await healthResponse.json()) as {
-      database?: string;
-      sourceDatabaseId?: number | null;
-      capabilities?: { settings?: Record<string, string | null> };
-    };
-    const query = queryBody.queries?.[0];
-    return {
-      query: typeof query?.query === "string" ? query.query : queries[0]!.query,
-      indexes: (indexBody.indexes ?? []).map((index) => ({
-        schema: String(index.schema ?? "public"),
-        table: String(index.table ?? "unknown"),
-        name: String(index.name ?? "unknown"),
-        definition: String(index.definition ?? ""),
-        scans: Number(index.scans ?? 0),
-        sizeBytes: Number(index.sizeBytes ?? 0),
-      })),
-      settings: healthBody.capabilities?.settings ?? {},
-      context: {
-        database: healthBody.database,
-        sourceLabel: "selected target",
-      },
-      sourceDatabaseId: healthBody.sourceDatabaseId ?? undefined,
-      mode,
-    };
+    const context = advisorContext ?? (await loadContext());
+    if (!context.ready)
+      throw new Error("The selected evidence is not sufficient for analysis.");
+    return { ...context.input, mode };
   };
 
   const previewPayload = async () => {
@@ -138,6 +221,9 @@ export function AdvisorWorkspace({
       setState("ready");
     }
   };
+  const selectedHistory = analyses.find(
+    (saved) => saved.id === selectedHistoryId && saved.result,
+  );
   return (
     <>
       <section className="card advisor-hero">
@@ -147,10 +233,12 @@ export function AdvisorWorkspace({
             Ask the advisor about your workload
           </h2>
           <p className="advisor-copy">
-            Combine query history, the saved plan, relation statistics, indexes,
-            and database settings into a structured analysis. You see the exact
-            sanitized payload before anything leaves your account.
+            Combine only the selected query, finding, saved plan, or catalog
+            relation with verifiable workload history, relation statistics,
+            indexes, and database settings. You see the exact sanitized payload
+            before anything leaves your account.
           </p>
+          <ContextSummary state={contextState} context={advisorContext} />
           <div className="mode-selector">
             <button
               className={`mode-card${mode === "balanced" ? " active" : ""}`}
@@ -185,7 +273,7 @@ export function AdvisorWorkspace({
               disabled={state === "working"}
             >
               {state === "working" ? <RotateCcw /> : <Send />}
-              {state === "working" ? "Analyzing…" : "Analyze checkout query"}
+              {state === "working" ? "Analyzing…" : "Analyze selected evidence"}
             </button>
           </div>
         </div>
@@ -207,43 +295,80 @@ export function AdvisorWorkspace({
       {state === "done" && analysis ? (
         <AnalysisResult analysis={analysis} metadata={metadata} />
       ) : null}
-      <div
-        className="content-grid"
-        style={{ gridTemplateColumns: "minmax(0,1fr) minmax(330px,.55fr)" }}
-      >
+      <div className="content-grid advisor-history-grid">
         <div id="analysis-history">
           <Card>
             <CardHeader
               title="Analysis history"
               subtitle="Saved, structured responses"
-              action={<Badge tone="violet">3 analyses</Badge>}
+              action={
+                <Badge tone="violet">
+                  {analyses.length}{" "}
+                  {analyses.length === 1 ? "analysis" : "analyses"}
+                </Badge>
+              }
             />
             <CardBody>
               <div className="analysis-list">
-                {analyses.map((analysis) => (
-                  <div
-                    className={`analysis-card severity-${analysis.severity}`}
-                    key={analysis.id}
+                {analyses.map((saved) => (
+                  <button
+                    type="button"
+                    className={`analysis-card severity-${saved.severity}`}
+                    key={saved.id}
+                    aria-expanded={selectedHistoryId === saved.id}
+                    disabled={!saved.result}
+                    onClick={() =>
+                      setSelectedHistoryId((current) =>
+                        current === saved.id ? null : saved.id,
+                      )
+                    }
+                    style={{
+                      width: "100%",
+                      textAlign: "left",
+                      cursor: saved.result ? "pointer" : "default",
+                    }}
                   >
                     <div className="analysis-head">
                       <span className="severity-mark" />
-                      <strong>{analysis.title}</strong>
-                      <span className="analysis-time">
-                        {analysis.createdAt}
-                      </span>
+                      <strong>{saved.title}</strong>
+                      <span className="analysis-time">{saved.createdAt}</span>
                     </div>
-                    <p className="analysis-summary">{analysis.summary}</p>
+                    <p className="analysis-summary">{saved.summary}</p>
                     <div className="analysis-meta">
-                      <span>{analysis.model}</span>
-                      <span>{analysis.confidence}% confidence</span>
-                      <span>{analysis.tokens.toLocaleString()} tokens</span>
+                      <span>{saved.model}</span>
+                      <span>{saved.confidence}% confidence</span>
+                      <span>{saved.tokens.toLocaleString()} tokens</span>
+                      <span>
+                        {saved.result ? "Open details" : "Unavailable"}
+                      </span>
                       <ChevronRight size={11} style={{ marginLeft: "auto" }} />
                     </div>
-                  </div>
+                  </button>
                 ))}
+                {analyses.length === 0 ? (
+                  <div className="empty-state">
+                    <div>
+                      <h2>No saved analyses</h2>
+                      <p>
+                        Select real evidence and run the advisor to create the
+                        first persisted analysis.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </CardBody>
           </Card>
+          {selectedHistory?.result ? (
+            <AnalysisResult
+              title="Saved analysis"
+              analysis={selectedHistory.result}
+              metadata={{
+                model: selectedHistory.model,
+                providerRequestId: selectedHistory.requestId,
+              }}
+            />
+          ) : null}
         </div>
         <Card>
           <CardHeader title="Privacy controls" />
@@ -269,6 +394,56 @@ export function AdvisorWorkspace({
         </Card>
       </div>
     </>
+  );
+}
+
+function ContextSummary({
+  state,
+  context,
+}: {
+  state: "loading" | "ready" | "missing" | "error";
+  context: AdvisorContext | null;
+}) {
+  if (state === "loading")
+    return <div className="privacy-note">Assembling selected evidence…</div>;
+  if (!context)
+    return (
+      <div className="privacy-note">
+        Open the advisor with <span className="mono">queryId</span>,{" "}
+        <span className="mono">findingId</span>, or{" "}
+        <span className="mono">planId</span>, or catalog relation in the URL. No
+        demo query or unrelated top statement will be substituted.
+      </div>
+    );
+  return (
+    <div className="privacy-note" data-testid="advisor-context-summary">
+      <ShieldCheck />
+      <span>
+        <strong>
+          {context.source.label} · {context.source.database}
+        </strong>
+        {" · "}
+        {context.selection.queryId
+          ? `query ${context.selection.queryId}`
+          : context.selection.findingId
+            ? `finding ${context.selection.findingId}`
+            : context.selection.planId
+              ? `plan ${context.selection.planId}`
+              : `${context.selection.relation}${context.selection.index ? ` · index ${context.selection.index}` : ""}`}
+        {" · "}
+        {context.evidence.historySamples} history samples ·{" "}
+        {context.evidence.tables.length} tables · {context.evidence.indexes}{" "}
+        indexes · {context.evidence.settings} settings
+        {context.evidence.planMatch
+          ? ` · ${context.evidence.planMatch === "explicit" ? "selected" : "safely matched"} plan`
+          : " · no matched plan"}
+        {context.omissions.length > 0 ? (
+          <span style={{ display: "block", marginTop: 4 }}>
+            Omitted: {context.omissions.join(" ")}
+          </span>
+        ) : null}
+      </span>
+    </div>
   );
 }
 
@@ -326,9 +501,11 @@ function PayloadPreview({ preview }: { preview: Preview }) {
 function AnalysisResult({
   analysis,
   metadata,
+  title = "Fresh analysis",
 }: {
   analysis: AiAnalysisResponse;
   metadata: { model?: string; providerRequestId?: string | null } | null;
+  title?: string;
 }) {
   return (
     <Card
@@ -340,7 +517,7 @@ function AnalysisResult({
       }
     >
       <CardHeader
-        title="Fresh analysis"
+        title={title}
         subtitle={`${metadata?.model ?? "configured model"} · ${metadata?.providerRequestId ?? "local response"}`}
         action={
           <Badge tone="violet">
@@ -349,29 +526,117 @@ function AnalysisResult({
         }
       />
       <CardBody>
-        <div
-          style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 12 }}
-        >
-          <span
-            className="empty-state-icon"
+        <div style={{ display: "grid", gap: 14 }}>
+          <div
             style={{
-              margin: 0,
-              color: "var(--violet)",
-              background: "var(--violet-soft)",
+              display: "grid",
+              gridTemplateColumns: "auto 1fr",
+              gap: 12,
             }}
           >
-            <Sparkles />
-          </span>
+            <span
+              className="empty-state-icon"
+              style={{
+                margin: 0,
+                color: "var(--violet)",
+                background: "var(--violet-soft)",
+              }}
+            >
+              <Sparkles />
+            </span>
+            <div>
+              <strong style={{ fontSize: 13 }}>{analysis.summary}</strong>
+              <p style={{ color: "var(--muted)", fontSize: 10 }}>
+                {analysis.caveats.join(" ") ||
+                  "Review the evidence and validate every recommendation in a non-production environment."}
+              </p>
+            </div>
+          </div>
           <div>
-            <strong style={{ fontSize: 13 }}>{analysis.summary}</strong>
-            <p style={{ color: "var(--muted)", fontSize: 10 }}>
-              {analysis.caveats.join(" ") ||
-                "Review the evidence and validate every recommendation in a non-production environment."}
-            </p>
-            <div className="privacy-note">
-              <Check />
-              {analysis.recommendations[0]?.validationSteps.join(" → ") ??
-                "No automated change is proposed."}
+            <strong className="card-subtitle">Evidence</strong>
+            <div className="analysis-list" style={{ marginTop: 8 }}>
+              {analysis.evidence.map((evidence, index) => (
+                <div
+                  className="privacy-note"
+                  key={`${evidence.reference}:${index}`}
+                >
+                  <Check />
+                  <span>
+                    {evidence.claim}{" "}
+                    <span className="mono">
+                      [{evidence.source}: {evidence.reference}]
+                    </span>
+                  </span>
+                </div>
+              ))}
+              {analysis.evidence.length === 0 ? (
+                <div className="privacy-note">No evidence claims returned.</div>
+              ) : null}
+            </div>
+          </div>
+          <div>
+            <strong className="card-subtitle">Recommendations</strong>
+            <div className="analysis-list" style={{ marginTop: 8 }}>
+              {analysis.recommendations.map((recommendation, index) => (
+                <div
+                  className="analysis-card"
+                  key={`${recommendation.title}:${index}`}
+                >
+                  <div className="analysis-head">
+                    <strong>{recommendation.title}</strong>
+                    <Badge
+                      tone={
+                        recommendation.risk === "critical" ||
+                        recommendation.risk === "high"
+                          ? "rose"
+                          : recommendation.risk === "medium"
+                            ? "amber"
+                            : "green"
+                      }
+                    >
+                      {recommendation.risk} ·{" "}
+                      {Math.round(recommendation.confidence * 100)}%
+                    </Badge>
+                  </div>
+                  <p className="analysis-summary">{recommendation.rationale}</p>
+                  <ol
+                    style={{
+                      color: "var(--muted)",
+                      fontSize: 10,
+                      paddingLeft: 18,
+                    }}
+                  >
+                    {recommendation.validationSteps.map((step) => (
+                      <li key={step}>{step}</li>
+                    ))}
+                  </ol>
+                  {recommendation.migrationSql ? (
+                    <div>
+                      <div className="analysis-head" style={{ marginTop: 10 }}>
+                        <Badge tone="amber">Review-only SQL</Badge>
+                        <button
+                          className="button"
+                          onClick={() =>
+                            void navigator.clipboard?.writeText(
+                              recommendation.migrationSql ?? "",
+                            )
+                          }
+                        >
+                          Copy SQL
+                        </button>
+                      </div>
+                      <pre className="payload-code">
+                        {recommendation.migrationSql}
+                      </pre>
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+              {analysis.recommendations.length === 0 ? (
+                <div className="privacy-note">
+                  No automated change is proposed.
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

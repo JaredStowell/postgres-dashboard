@@ -6,6 +6,7 @@ import { QueryTable } from "@/components/queries/query-table";
 import { MetricCard } from "@/components/ui/metric-card";
 import { PageHeader } from "@/components/ui/page-header";
 import { DataSourceBadge } from "@/components/ui/data-source-badge";
+import { contextualHref } from "@/lib/presentation/inventory";
 
 export function QueriesPage({
   queries = demoRepository.queries(),
@@ -14,9 +15,15 @@ export function QueriesPage({
     label: "Sample preview",
     detail: "No database data was supplied.",
   },
+  initialHasMore = false,
+  sourceKey,
+  schema,
 }: {
   queries?: QueryStat[];
   source?: DataSourceState;
+  initialHasMore?: boolean;
+  sourceKey?: string;
+  schema?: string;
 }) {
   const totalExecution = queries.reduce(
     (total, query) => total + query.totalTime,
@@ -38,7 +45,7 @@ export function QueriesPage({
       detail: "Current cumulative statistics",
       trend: 0,
       tone: "cyan" as const,
-      points: [32, 40, 38, 44, 48, 51, 58, 55, 61, 68, 66, 72],
+      points: [],
     },
     {
       label: "Regressions",
@@ -48,7 +55,7 @@ export function QueriesPage({
       detail: "Reset-aware collected signals",
       trend: 0,
       tone: "rose" as const,
-      points: [19, 21, 18, 24, 22, 28, 31, 39, 47, 53, 58, 65],
+      points: [],
     },
     {
       label: "Mean latency",
@@ -56,7 +63,7 @@ export function QueriesPage({
       detail: `Weighted by ${totalCalls.toLocaleString()} calls`,
       trend: 0,
       tone: "amber" as const,
-      points: [43, 41, 42, 46, 45, 47, 51, 49, 53, 57, 55, 59],
+      points: [],
     },
     {
       label: "Cache hit",
@@ -64,7 +71,7 @@ export function QueriesPage({
       detail: `${queries.length} bounded statements`,
       trend: 0,
       tone: "violet" as const,
-      points: [78, 79, 81, 80, 77, 76, 74, 75, 72, 73, 70, 69],
+      points: [],
     },
   ];
   return (
@@ -76,11 +83,19 @@ export function QueriesPage({
         actions={
           <>
             <DataSourceBadge source={source} />
-            <a className="button" href="/api/queries?limit=250">
+            <a
+              className="button"
+              href={contextualHref("/api/queries?limit=250", {
+                source: sourceKey,
+              })}
+            >
               <Download />
               Export JSON
             </a>
-            <a href="/plans" className="button primary">
+            <a
+              href={contextualHref("/plans", { source: sourceKey, schema })}
+              className="button primary"
+            >
               <FlaskConical />
               Open EXPLAIN Lab
             </a>
@@ -92,7 +107,12 @@ export function QueriesPage({
           <MetricCard metric={metric} key={metric.label} />
         ))}
       </div>
-      <QueryTable queries={queries} />
+      <QueryTable
+        queries={queries}
+        initialHasMore={initialHasMore}
+        source={sourceKey}
+        schema={schema}
+      />
     </div>
   );
 }

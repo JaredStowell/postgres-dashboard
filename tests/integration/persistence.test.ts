@@ -88,6 +88,134 @@ describe("route-facing control-plane persistence", () => {
     expect(windows.baseline?.sampleCount).toBe(1);
   });
 
+  it("segments implicit pg_stat_statements counter resets from older baselines", async () => {
+    const queryId = "-900000000000001";
+    const calls = [100, 200, 10, 30, 60];
+    const execution = [1_000, 2_000, 100, 500, 1_400];
+    for (const [index, count] of calls.entries()) {
+      const run = await database.pool.query<{ id: string }>(
+        `INSERT INTO index_analyzer.collection_runs
+          (source_database_id, started_at, finished_at, status)
+         VALUES ($1, $2, $2, 'succeeded') RETURNING id::text`,
+        [
+          sourceDatabaseId,
+          new Date(Date.now() + (index + 1) * 1_000).toISOString(),
+        ],
+      );
+      await database.pool.query(
+        `INSERT INTO index_analyzer.query_snapshots
+          (collection_run_id, query_id, user_oid, database_oid,
+           normalized_query, calls, total_plan_time, mean_plan_time,
+           total_exec_time, mean_exec_time, rows, shared_blks_hit,
+           shared_blks_read, shared_blks_dirtied, shared_blks_written,
+           temp_blks_read, temp_blks_written, wal_records, wal_bytes)
+         VALUES ($1, $2,
+           (SELECT oid FROM pg_roles WHERE rolname = current_user),
+           (SELECT oid FROM pg_database WHERE datname = current_database()),
+           'SELECT implicit_reset_fixture', $3::bigint, 0, 0, $4::float8,
+           $4::float8 / $3::float8, $3::bigint * 2, 0, 0, 0, 0, 0, 0, 0, 0)`,
+        [Number(run.rows[0]?.id), queryId, count, execution[index]],
+      );
+    }
+    const windows = await getQueryRegressionWindows(
+      database.pool,
+      sourceDatabaseId,
+      queryId,
+      { recentSamples: 1, baselineSamples: 3 },
+    );
+    expect(windows.recent).toMatchObject({
+      sampleCount: 1,
+      calls: 30,
+      meanExecTimeMs: 30,
+    });
+    expect(windows.baseline).toMatchObject({
+      sampleCount: 1,
+      calls: 20,
+      meanExecTimeMs: 20,
+    });
+    expect(windows.resetSamplesDiscarded).toBeGreaterThanOrEqual(3);
+  });
+
+  it("segments explicit collection reset boundaries from older baselines", async () => {
+    const queryId = "-900000000000002";
+    for (let index = 0; index < 5; index += 1) {
+      const count = (index + 1) * 100;
+      const run = await database.pool.query<{ id: string }>(
+        `INSERT INTO index_analyzer.collection_runs
+          (source_database_id, started_at, finished_at, status, reset_detected)
+         VALUES ($1, $2, $2, 'succeeded', $3) RETURNING id::text`,
+        [
+          sourceDatabaseId,
+          new Date(Date.now() + 60_000 + (index + 1) * 1_000).toISOString(),
+          index === 2,
+        ],
+      );
+      await database.pool.query(
+        `INSERT INTO index_analyzer.query_snapshots
+          (collection_run_id, query_id, user_oid, database_oid,
+           normalized_query, calls, total_plan_time, mean_plan_time,
+           total_exec_time, mean_exec_time, rows, shared_blks_hit,
+           shared_blks_read, shared_blks_dirtied, shared_blks_written,
+           temp_blks_read, temp_blks_written, wal_records, wal_bytes)
+         VALUES ($1, $2,
+           (SELECT oid FROM pg_roles WHERE rolname = current_user),
+           (SELECT oid FROM pg_database WHERE datname = current_database()),
+           'SELECT explicit_reset_fixture', $3::bigint, 0, 0,
+           $3::float8 * 10, 10, $3::bigint * 2, 0, 0, 0, 0, 0, 0, 0, 0)`,
+        [Number(run.rows[0]?.id), queryId, count],
+      );
+    }
+    const windows = await getQueryRegressionWindows(
+      database.pool,
+      sourceDatabaseId,
+      queryId,
+      { recentSamples: 1, baselineSamples: 3 },
+    );
+    expect(windows.recent).toMatchObject({ sampleCount: 1, calls: 100 });
+    expect(windows.baseline).toMatchObject({ sampleCount: 1, calls: 100 });
+    expect(windows.resetSamplesDiscarded).toBeGreaterThanOrEqual(3);
+  });
+
+  it("does not bridge a query disappearance and later reappearance", async () => {
+    const queryId = "-900000000000003";
+    const calls = [100, null, 10, 20] as const;
+    for (const [index, count] of calls.entries()) {
+      const run = await database.pool.query<{ id: string }>(
+        `INSERT INTO index_analyzer.collection_runs
+          (source_database_id, started_at, finished_at, status)
+         VALUES ($1, $2, $2, 'succeeded') RETURNING id::text`,
+        [
+          sourceDatabaseId,
+          new Date(Date.now() + 120_000 + (index + 1) * 1_000).toISOString(),
+        ],
+      );
+      if (count === null) continue;
+      await database.pool.query(
+        `INSERT INTO index_analyzer.query_snapshots
+          (collection_run_id, query_id, user_oid, database_oid,
+           normalized_query, calls, total_plan_time, mean_plan_time,
+           total_exec_time, mean_exec_time, rows, shared_blks_hit,
+           shared_blks_read, shared_blks_dirtied, shared_blks_written,
+           temp_blks_read, temp_blks_written, wal_records, wal_bytes)
+         VALUES ($1, $2,
+           (SELECT oid FROM pg_roles WHERE rolname = current_user),
+           (SELECT oid FROM pg_database WHERE datname = current_database()),
+           'SELECT disappearance_fixture', $3::bigint, 0, 0,
+           $3::float8 * 10, 10, $3::bigint, 0, 0, 0, 0, 0, 0, 0, 0)`,
+        [Number(run.rows[0]?.id), queryId, count],
+      );
+    }
+    const windows = await getQueryRegressionWindows(
+      database.pool,
+      sourceDatabaseId,
+      queryId,
+      { recentSamples: 1, baselineSamples: 3 },
+    );
+    expect(windows.recent).toMatchObject({ sampleCount: 1, calls: 10 });
+    expect(windows.baseline).toBeNull();
+    expect(windows.resetSamplesDiscarded).toBeGreaterThanOrEqual(2);
+  });
+
   it("persists explain runs and idempotent plan comparisons", async () => {
     const baseline = await saveExplainRun(database.pool, {
       sourceDatabaseId,
@@ -222,5 +350,51 @@ describe("route-facing control-plane persistence", () => {
       [requestId],
     );
     expect(recommendations.rows).toHaveLength(1);
+  });
+
+  it("rejects oversized AI results before mutating persistence state", async () => {
+    const requestId = await createAiAnalysisRequest(database.pool, {
+      sourceDatabaseId,
+      mode: "deep",
+      model: "fixture-model",
+      payloadDigest: "sha256:oversized",
+      payloadPreview: { query: "SELECT * FROM sales.orders" },
+      requestSizeBytes: 64,
+    });
+    await expect(
+      completeAiAnalysis(
+        database.pool,
+        requestId,
+        {
+          summary: "Oversized fixture",
+          severity: "info",
+          confidence: 0.5,
+          evidence: [],
+          caveats: [],
+          recommendations: [],
+          validationSteps: [],
+          rawStructuredResponse: { payload: "x".repeat(300 * 1_024) },
+        },
+        {},
+      ),
+    ).rejects.toThrow(/256 KiB/);
+    const state = await database.pool.query<{
+      status: string;
+      results: string;
+      recommendations: string;
+    }>(
+      `SELECT request.status,
+        (SELECT count(*)::text FROM index_analyzer.ai_analysis_results result
+         WHERE result.request_id = request.id) AS results,
+        (SELECT count(*)::text FROM index_analyzer.ai_recommendations recommendation
+         WHERE recommendation.request_id = request.id) AS recommendations
+       FROM index_analyzer.ai_analysis_requests request WHERE request.id = $1`,
+      [requestId],
+    );
+    expect(state.rows[0]).toEqual({
+      status: "pending",
+      results: "0",
+      recommendations: "0",
+    });
   });
 });

@@ -7,6 +7,7 @@ import type { IndexInfo } from "./indexes";
 import type { ActivitySession } from "./activity";
 import { boundedPage, type PageInput, toNumber } from "./sql";
 import { redactSql } from "../analysis/sql-safety";
+import type { AlertRule, FindingSeverity } from "../analysis/rules";
 
 export interface SourceRecord {
   id: number;
@@ -173,6 +174,7 @@ export class ControlPlaneRepository {
       JOIN index_analyzer.collection_runs cr ON cr.id = ds.collection_run_id
       JOIN index_analyzer.collection_runs current_run ON current_run.id = $1
       WHERE cr.source_database_id = current_run.source_database_id
+        AND cr.status = 'succeeded'
       ORDER BY ds.captured_at DESC LIMIT 1
     `,
       [runId],
@@ -208,9 +210,9 @@ export class ControlPlaneRepository {
   async saveQuerySnapshots(
     runId: number,
     rows: readonly QueryStat[],
-  ): Promise<void> {
-    if (rows.length === 0) return;
-    await this.db.query(
+  ): Promise<number> {
+    if (rows.length === 0) return 0;
+    const result = await this.db.query(
       `
       INSERT INTO index_analyzer.query_snapshots
       SELECT $1, x.query_id, x.user_oid::oid, x.database_oid::oid, x.normalized_query, x.toplevel,
@@ -255,6 +257,7 @@ export class ControlPlaneRepository {
         ),
       ],
     );
+    return result.rowCount ?? 0;
   }
 
   async saveTableSnapshots(
@@ -418,12 +421,45 @@ export class ControlPlaneRepository {
     return result.rows;
   }
 
+  async listAlertRules(): Promise<Map<string, AlertRule>> {
+    const result = await this.db.query<Record<string, unknown>>(`
+      SELECT rule_key, enabled, severity, configuration
+      FROM index_analyzer.alert_rules
+      ORDER BY rule_key
+      LIMIT 250
+    `);
+    const rules = new Map<string, AlertRule>();
+    for (const row of result.rows) {
+      const severity = String(row["severity"]);
+      if (
+        !["info", "low", "medium", "warning", "high", "critical"].includes(
+          severity,
+        )
+      )
+        continue;
+      const configuration = row["configuration"];
+      const rule: AlertRule = {
+        ruleKey: String(row["rule_key"]),
+        enabled: row["enabled"] === true,
+        severity: severity as FindingSeverity,
+        configuration:
+          configuration &&
+          typeof configuration === "object" &&
+          !Array.isArray(configuration)
+            ? (configuration as Record<string, unknown>)
+            : {},
+      };
+      rules.set(rule.ruleKey, rule);
+    }
+    return rules;
+  }
+
   async upsertFinding(input: {
     sourceDatabaseId: number;
     ruleKey?: string;
     fingerprint: string;
     category: string;
-    severity: "info" | "low" | "medium" | "warning" | "high" | "critical";
+    severity: FindingSeverity;
     title: string;
     summary: string;
     evidence: unknown;

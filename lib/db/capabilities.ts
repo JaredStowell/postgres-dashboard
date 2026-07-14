@@ -58,21 +58,20 @@ export async function detectCapabilities(
       WHERE name IN (
         'autovacuum', 'autovacuum_analyze_scale_factor', 'autovacuum_vacuum_scale_factor',
         'autovacuum_freeze_max_age', 'max_connections', 'pg_stat_statements.track',
-        'track_io_timing', 'track_planning'
+        'pg_stat_statements.track_planning', 'track_io_timing'
       )
     `),
     db.query<{ table_name: string; column_name: string }>(`
-      SELECT table_name, column_name
-      FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name IN ('pg_stat_statements', 'pg_stat_progress_vacuum', 'pg_stat_progress_create_index')
-      UNION ALL
-      SELECT c.relname, a.attname
+      SELECT c.relname AS table_name, a.attname AS column_name
       FROM pg_class c
       JOIN pg_namespace n ON n.oid = c.relnamespace
       JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-      WHERE n.nspname = 'pg_catalog'
-        AND c.relname IN ('pg_stat_activity', 'pg_stat_all_tables', 'pg_stat_all_indexes')
+      LEFT JOIN pg_extension e ON e.extnamespace = n.oid
+        AND e.extname = 'pg_stat_statements'
+      WHERE (n.nspname = 'pg_catalog' AND c.relname IN (
+          'pg_stat_activity', 'pg_stat_all_tables', 'pg_stat_all_indexes',
+          'pg_stat_progress_vacuum', 'pg_stat_progress_create_index'
+        )) OR (e.oid IS NOT NULL AND c.relname = 'pg_stat_statements')
       ORDER BY 1, 2
     `),
   ]);
@@ -97,8 +96,8 @@ export async function detectCapabilities(
     warnings.push("Current role is not a member of pg_read_all_stats");
   if (settingMap["track_io_timing"] !== "on")
     warnings.push("track_io_timing is disabled");
-  if (settingMap["track_planning"] !== "on")
-    warnings.push("track_planning is disabled");
+  if (settingMap["pg_stat_statements.track_planning"] !== "on")
+    warnings.push("pg_stat_statements.track_planning is disabled");
 
   return {
     databaseOid: row.database_oid,

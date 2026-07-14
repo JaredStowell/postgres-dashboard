@@ -13,7 +13,7 @@ describe("database migrations", () => {
     await database.destroy();
   });
 
-  it("applies all five migrations and records immutable checksums", async () => {
+  it("applies all six migrations and records immutable checksums", async () => {
     const result = await database.pool.query<{
       version: string;
       checksum: string;
@@ -26,6 +26,7 @@ describe("database migrations", () => {
       "0003_plans.sql",
       "0004_findings.sql",
       "0005_ai_advisor.sql",
+      "0006_alert_rule_expansion.sql",
     ]);
     expect(
       result.rows.every((row) => /^[a-f0-9]{64}$/.test(row.checksum)),
@@ -35,7 +36,7 @@ describe("database migrations", () => {
   it("is safe to run repeatedly", async () => {
     const result = await runMigrations(database.pool);
     expect(result.applied).toEqual([]);
-    expect(result.skipped).toHaveLength(5);
+    expect(result.skipped).toHaveLength(6);
   });
 
   it("creates retention-friendly history indexes and default rules", async () => {
@@ -53,6 +54,9 @@ describe("database migrations", () => {
     expect(indexes.rows.map((row) => row.indexname)).toContain(
       "findings_database_status_seen_idx",
     );
-    expect(rules.rows).toHaveLength(9);
+    expect(rules.rows.map((row) => row.rule_key)).toEqual(
+      expect.arrayContaining(["analyze-staleness", "missing-index"]),
+    );
+    expect(rules.rows).toHaveLength(11);
   });
 });

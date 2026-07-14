@@ -17,6 +17,9 @@ export function SqlEditor({
       theme="dark"
       extensions={[sql({ dialect: PostgreSQL })]}
       onChange={onChange}
+      onCreateEditor={(view) => {
+        view.contentDOM.setAttribute("aria-label", "SQL statement");
+      }}
       basicSetup={{
         foldGutter: false,
         highlightActiveLineGutter: false,

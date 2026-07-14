@@ -57,6 +57,31 @@ describe("AI Advisor route", () => {
     expect(body.analysis.recommendations).toBeInstanceOf(Array);
   });
 
+  it("analyzes finding-only evidence without inventing a query", async () => {
+    process.env.AI_MOCK_MODE = "true";
+    const response = await POST(
+      request({
+        context: {
+          database: "index_analyzer",
+          finding: {
+            id: "42",
+            category: "maintenance",
+            severity: "warning",
+            title: "Dead tuple pressure",
+            summary: "The measured dead tuple ratio crossed the threshold.",
+          },
+        },
+        statistics: { "finding.evidence.deadRatio": 0.31 },
+        submit: true,
+      }),
+    );
+    const body = (await response.json()) as Record<string, any>;
+    expect(response.status).toBe(200);
+    expect(body.preview.payload.query).toBeNull();
+    expect(body.preview.payload.context.finding.id).toBe("42");
+    expect(body.preview.omissions).toContain("normalized query not available");
+  });
+
   it("refuses submission without a configured provider or mock mode", async () => {
     delete process.env.OPENAI_API_KEY;
     process.env.AI_MOCK_MODE = "false";
@@ -72,6 +97,15 @@ describe("AI Advisor route", () => {
     const response = await POST(
       request({ query: "SELECT 1", submit: true, persist: true }),
     );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "validation_failed" },
+    });
+  });
+
+  it("rejects an empty evidence payload", async () => {
+    process.env.AI_MOCK_MODE = "true";
+    const response = await POST(request({ submit: true }));
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({
       error: { code: "validation_failed" },

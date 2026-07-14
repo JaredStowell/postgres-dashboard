@@ -20,6 +20,8 @@
   ],
   "vars": {
     "INDEX_ANALYZER_TARGETS": "local:Local PostgreSQL:TARGET_LOCAL",
+    "COLLECTION_RETENTION_DAYS": "14",
+    "COLLECTION_MAX_RUNS": "5000",
   },
   "triggers": {
     "crons": ["*/5 * * * *"],

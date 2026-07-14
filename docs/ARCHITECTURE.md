@@ -4,6 +4,8 @@
 
 The user-facing application is a vinext App Router build running as a Cloudflare Worker. Server components and route handlers read bindings through the Worker environment. A scheduled collector uses the same diagnostic modules to persist snapshots into the control database.
 
+`worker/web.mjs` is the production Worker entry around vinext's generated fetch handler. It creates one PostgreSQL pool registry per Worker request, reuses connections only inside that request, and closes them when the streamed response completes or is canceled. This prevents workerd from reusing a Hyperdrive socket across request contexts. The raw generated RSC handler must not be deployed directly.
+
 There are two logical database roles:
 
 1. **Control database:** owns the `index_analyzer` schema, migrations, histories, plans, findings, and AI analyses.
@@ -30,7 +32,7 @@ Collection is idempotent at the run level and findings are deduplicated by a sta
 
 Plans are requested in JSON format and stored as JSONB. The analysis engine walks every plan node, derives stable paths, calculates aggregate metrics, and emits evidence-backed warnings. Plan comparison matches nodes by identity, relation, and structure before reporting changed timing, cost, estimates, and shape.
 
-Plain EXPLAIN is the normal path. ANALYZE is separately confirmed and executed inside a read-only transaction with local timeouts and a mandatory rollback.
+Plain EXPLAIN is the normal path. ANALYZE is separately confirmed, limited to a conservative single-table query grammar, catalog-verified before planning, and executed inside a read-only transaction with local timeouts and a mandatory rollback.
 
 ## Capability degradation
 
@@ -53,4 +55,3 @@ Every unsupported feature produces an explicit capability state in the UI. The a
 - Heavy SQL editor and plan visualization code is client-only and split from initial routes.
 - Charts consume pre-aggregated time buckets rather than unbounded raw history.
 - API and bundle benchmarks are recorded under `artifacts/`, which is intentionally untracked.
-

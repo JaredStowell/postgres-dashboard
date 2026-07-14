@@ -6,4 +6,3 @@
 - Test every change in proportion to risk. Database and EXPLAIN changes require real PostgreSQL integration coverage.
 - Commit cohesive, reviewed slices regularly and push `main` when their focused verification passes.
 - Never commit credentials, connection strings containing secrets, OpenAI keys, or generated Cloudflare identifiers.
-

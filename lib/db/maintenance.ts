@@ -1,6 +1,6 @@
 import type { DatabasePool, Queryable } from "./client";
 import { withReadOnlyTransaction } from "./client";
-import { boundedPage, type PageInput, toNumber } from "./sql";
+import { boundedPage, escapeLike, type PageInput, toNumber } from "./sql";
 
 export interface TableMaintenance {
   relationOid: number;
@@ -33,7 +33,7 @@ export interface TableMaintenance {
 
 export async function listTableMaintenance(
   db: Queryable,
-  input: PageInput & { schema?: string } = {},
+  input: PageInput & { schema?: string; search?: string } = {},
 ): Promise<TableMaintenance[]> {
   const page = boundedPage(input);
   const values: unknown[] = [];
@@ -45,6 +45,12 @@ export async function listTableMaintenance(
   if (input.schema) {
     values.push(input.schema);
     clauses.push(`n.nspname = $${values.length}`);
+  }
+  if (input.search) {
+    values.push(`%${escapeLike(input.search)}%`);
+    clauses.push(
+      `(c.relname ILIKE $${values.length} ESCAPE '\\' OR n.nspname ILIKE $${values.length} ESCAPE '\\')`,
+    );
   }
   values.push(page.limit, page.offset);
   const result = await db.query<Record<string, unknown>>(
@@ -59,7 +65,9 @@ export async function listTableMaintenance(
       pg_total_relation_size(c.oid) AS total_size_bytes, st.last_vacuum, st.last_autovacuum,
       st.last_analyze, st.last_autoanalyze, COALESCE(st.vacuum_count, 0) AS vacuum_count,
       COALESCE(st.autovacuum_count, 0) AS autovacuum_count, COALESCE(st.analyze_count, 0) AS analyze_count,
-      COALESCE(st.autoanalyze_count, 0) AS autoanalyze_count, age(c.relfrozenxid) AS transaction_id_age,
+      COALESCE(st.autoanalyze_count, 0) AS autoanalyze_count,
+      CASE WHEN c.relkind IN ('r', 'm') AND c.relfrozenxid <> '0'::xid
+        THEN age(c.relfrozenxid) ELSE 0 END AS transaction_id_age,
       COALESCE(c.reloptions, '{}'::text[]) AS relation_options
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -119,17 +127,61 @@ export interface ProgressOperation {
 
 export async function listMaintenanceProgress(
   db: Queryable,
+  supportedColumns?: Record<string, string[]>,
 ): Promise<ProgressOperation[]> {
-  const result = await db.query<Record<string, unknown>>(`
-    SELECT pid, 'vacuum' AS operation, relid::int AS relation_oid, phase,
+  let columns = supportedColumns;
+  if (!columns) {
+    const discovered = await db.query<{
+      table_name: string;
+      column_name: string;
+    }>(`
+      SELECT c.relname AS table_name, a.attname AS column_name
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'pg_catalog'
+      JOIN pg_attribute a ON a.attrelid = c.oid
+        AND a.attnum > 0 AND NOT a.attisdropped
+      WHERE c.relname IN ('pg_stat_progress_vacuum', 'pg_stat_progress_create_index')
+    `);
+    columns = {};
+    for (const column of discovered.rows) {
+      (columns[column.table_name] ??= []).push(column.column_name);
+    }
+  }
+  const hasColumns = (view: string, required: string[]) => {
+    const available = new Set(columns?.[view] ?? []);
+    return required.every((column) => available.has(column));
+  };
+  const selections: string[] = [];
+  if (
+    hasColumns("pg_stat_progress_vacuum", [
+      "pid",
+      "relid",
+      "phase",
+      "heap_blks_scanned",
+      "heap_blks_total",
+    ])
+  ) {
+    selections.push(`SELECT pid, 'vacuum' AS operation, relid::int AS relation_oid, phase,
       heap_blks_scanned AS completed, heap_blks_total AS total
-    FROM pg_stat_progress_vacuum
-    UNION ALL
-    SELECT pid, 'create_index' AS operation, relid::int AS relation_oid, phase,
+      FROM pg_catalog.pg_stat_progress_vacuum`);
+  }
+  if (
+    hasColumns("pg_stat_progress_create_index", [
+      "pid",
+      "relid",
+      "phase",
+      "blocks_done",
+      "blocks_total",
+    ])
+  ) {
+    selections.push(`SELECT pid, 'create_index' AS operation, relid::int AS relation_oid, phase,
       blocks_done AS completed, blocks_total AS total
-    FROM pg_stat_progress_create_index
-    LIMIT 250
-  `);
+      FROM pg_catalog.pg_stat_progress_create_index`);
+  }
+  if (selections.length === 0) return [];
+  const result = await db.query<Record<string, unknown>>(
+    `${selections.join(" UNION ALL ")} LIMIT 250`,
+  );
   return result.rows.map((row) => ({
     processId: toNumber(row["pid"]),
     operation: row["operation"] === "vacuum" ? "vacuum" : "create_index",

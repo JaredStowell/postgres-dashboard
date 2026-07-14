@@ -1,6 +1,7 @@
 import {
   analyzeIndexOverlaps,
   calculateWriteCostSignal,
+  deriveMissingIndexCandidates,
   deriveMissingIndexEvidence,
 } from "@/lib/analysis/indexes";
 import type { IndexRecord } from "@/lib/types";
@@ -85,6 +86,43 @@ describe("index overlap analysis", () => {
       ]),
     ).toEqual([]);
   });
+
+  it("protects primary and constraint-backed semantics when selecting redundancy", () => {
+    expect(
+      analyzeIndexOverlaps([
+        {
+          ...base,
+          id: "primary",
+          unique: true,
+          primary: true,
+          constraintBacked: true,
+          scans: 0,
+        },
+        { ...base, id: "copy", unique: true, scans: 100 },
+      ]),
+    ).toEqual([
+      expect.objectContaining({
+        redundantId: "copy",
+        coveringId: "primary",
+      }),
+    ]);
+    expect(
+      analyzeIndexOverlaps([
+        { ...base, id: "constraint-a", constraintBacked: true },
+        { ...base, id: "constraint-b", constraintBacked: true },
+      ]),
+    ).toEqual([]);
+    expect(
+      analyzeIndexOverlaps([
+        { ...base, id: "primary", primary: true, constraintBacked: true },
+        {
+          ...base,
+          id: "longer",
+          keyColumns: ["tenant_id", "status"],
+        },
+      ]),
+    ).toEqual([]);
+  });
 });
 
 describe("write cost", () => {
@@ -157,5 +195,82 @@ describe("missing-index evidence", () => {
         },
       ]),
     ).toEqual([]);
+  });
+
+  it("emits bounded candidates only when no valid full leading-key coverage exists", () => {
+    const plan = [
+      {
+        Plan: {
+          "Node Type": "Seq Scan",
+          Schema: "sales",
+          "Relation Name": "orders",
+          Alias: "o",
+          Filter: "((o.customer_id = 42) AND (o.status = 'open'::text))",
+          "Plan Rows": 50_000,
+          "Actual Rows": 100,
+          "Rows Removed by Filter": 49_900,
+          "Actual Loops": 1,
+        },
+      },
+    ];
+    const candidate = deriveMissingIndexCandidates(plan, [], {
+      minimumRows: 1_000,
+      minimumScore: 50,
+    });
+    expect(candidate).toEqual([
+      expect.objectContaining({
+        schema: "sales",
+        table: "orders",
+        columns: ["customer_id", "status"],
+        confidence: expect.stringMatching(/medium|high/),
+      }),
+    ]);
+
+    const covered = deriveMissingIndexCandidates(plan, [
+      {
+        ...base,
+        schema: "sales",
+        table: "orders",
+        keyColumns: ["status", "customer_id", "created_at DESC"],
+        ready: true,
+        valid: true,
+      },
+    ]);
+    expect(covered).toEqual([]);
+  });
+
+  it("does not let invalid or partial indexes suppress plan evidence", () => {
+    const plan = [
+      {
+        Plan: {
+          "Node Type": "Seq Scan",
+          Schema: "sales",
+          "Relation Name": "orders",
+          Filter: "(status = 'open'::text)",
+          "Plan Rows": 20_000,
+          "Actual Rows": 50,
+          "Rows Removed by Filter": 10_000,
+        },
+      },
+    ];
+    expect(
+      deriveMissingIndexCandidates(plan, [
+        {
+          ...base,
+          schema: "sales",
+          table: "orders",
+          keyColumns: ["status"],
+          predicate: "status = 'open'",
+        },
+        {
+          ...base,
+          id: "invalid",
+          schema: "sales",
+          table: "orders",
+          keyColumns: ["status"],
+          valid: false,
+        },
+      ]),
+    ).toHaveLength(1);
   });
 });

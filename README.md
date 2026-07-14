@@ -55,6 +55,8 @@ pnpm test:e2e            # Chromium and mobile product flows
 pnpm vinext:check        # vinext compatibility scan
 pnpm build               # production build
 pnpm deploy:dry          # Cloudflare packaging dry run; no deployment
+pnpm smoke:worker        # sequential workerd + Hyperdrive boundary smoke
+pnpm collector:dry       # scheduled collector Worker packaging dry run
 pnpm benchmark           # bounded inventory API/load benchmark
 pnpm verify              # formatting, lint, types, unit tests, and build
 ```
@@ -86,6 +88,7 @@ For Workers, create the key as a secret rather than a Wrangler variable:
 
 ```bash
 npx wrangler secret put OPENAI_API_KEY
+npx wrangler secret put EXPLAIN_CONFIRMATION_SECRET
 ```
 
 AI payloads contain no result rows, redact literals/comments by default, have a strict size cap, are shown to the operator before submission, and use `store: false`. Suggested SQL is review-only.

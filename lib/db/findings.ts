@@ -10,9 +10,12 @@ export async function listFindings(
   const page = boundedPage(input);
   const result = await db.query<Record<string, unknown>>(
     `
-    SELECT f.*, r.rule_key, r.display_name AS rule_name
+    SELECT f.*, r.rule_key, r.display_name AS rule_name, sd.database_name,
+      s.source_key
     FROM index_analyzer.findings f
     LEFT JOIN index_analyzer.alert_rules r ON r.id = f.rule_id
+    JOIN index_analyzer.source_databases sd ON sd.id = f.source_database_id
+    JOIN index_analyzer.sources s ON s.id = sd.source_id
     WHERE ($1::bigint IS NULL OR f.source_database_id = $1)
       AND ($2::text IS NULL OR f.status = $2)
     ORDER BY CASE f.severity

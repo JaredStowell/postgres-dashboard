@@ -25,12 +25,13 @@
     "db:down": "docker compose down",
     "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "db:seed": "tsx --env-file-if-exists=.env scripts/seed.ts",
-    "db:setup": "pnpm db:up && pnpm db:migrate && pnpm db:seed",
+    "db:setup": "pnpm db:up && pnpm db:migrate && pnpm db:seed && pnpm collect",
     "collect": "tsx --env-file-if-exists=.env scripts/collect.ts",
     "collector:dev": "wrangler dev --config wrangler.collector.jsonc --test-scheduled",
     "collector:dry": "wrangler deploy --config wrangler.collector.jsonc --dry-run",
     "benchmark": "tsx --env-file-if-exists=.env scripts/benchmark.ts",
-    "deploy:dry": "vinext build && vinext-cloudflare deploy --dry-run",
+    "smoke:worker": "tsx --env-file-if-exists=.env scripts/worker-smoke.ts",
+    "deploy:dry": "vinext build && wrangler deploy worker/web.mjs --assets dist/client --config wrangler.jsonc --dry-run",
     "verify": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build"
   },
   "dependencies": {

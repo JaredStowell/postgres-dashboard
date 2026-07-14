@@ -29,6 +29,17 @@ function severityForScore(score: number): Severity {
           : "info";
 }
 
+export function effectiveFreezeMaxAge(
+  relationOptions: readonly string[],
+  fallback: number,
+): number {
+  const configured = relationOptions
+    .find((option) => option.startsWith("autovacuum_freeze_max_age="))
+    ?.split("=", 2)[1];
+  const value = Number(configured);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
 export function calculateMaintenanceScore(
   input: MaintenanceInput,
   now = new Date(),

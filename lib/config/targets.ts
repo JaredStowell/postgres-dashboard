@@ -49,7 +49,11 @@ export function parseTargetRegistry(
     if (!KEY_PATTERN.test(key)) throw new Error(`Invalid target key: ${key}`);
     if (!BINDING_PATTERN.test(binding))
       throw new Error(`Invalid target binding: ${binding}`);
+    if (label.trim().length === 0 || label.trim().length > 80)
+      throw new Error(`Invalid target label: ${label}`);
     if (registry.has(key)) throw new Error(`Duplicate target key: ${key}`);
+    if (registry.size >= 32)
+      throw new Error("At most 32 database targets may be configured");
     registry.set(key, {
       key,
       label: label.trim(),

@@ -3,6 +3,7 @@
 import { lazy, Suspense, useState } from "react";
 import {
   Braces,
+  Bot,
   Check,
   ChevronDown,
   Clock3,
@@ -15,14 +16,15 @@ import {
 import type { PlanNode } from "@/lib/demo/types";
 import type { PlanDiff as PlanDiffResult } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
+import { contextualHref } from "@/lib/presentation/inventory";
 import { PlanTree } from "./plan-tree";
 
 const LazySqlEditor = lazy(async () => ({
   default: (await import("./sql-editor")).SqlEditor,
 }));
 
-const initialSql =
-  "SELECT customer_id, sum(total_cents) AS revenue\nFROM sales.orders\nWHERE created_at > now() - interval '90 days'\nGROUP BY customer_id\nORDER BY revenue DESC\nLIMIT 25";
+const starterSql =
+  "SELECT *\nFROM sales.orders\nWHERE id > 0\nORDER BY id DESC\nLIMIT 25";
 
 function numberValue(record: Record<string, unknown>, key: string): number {
   const value = record[key];
@@ -82,17 +84,28 @@ function toPlanNode(value: unknown, path = "root"): PlanNode | null {
   };
 }
 
-export function PlanLab({ plan }: { plan: PlanNode }) {
-  const [sql, setSql] = useState(initialSql);
+export function PlanLab({
+  plan,
+  sourceKey,
+  schema,
+  initialSql,
+}: {
+  plan?: PlanNode;
+  sourceKey?: string;
+  schema?: string;
+  initialSql?: string;
+}) {
+  const [sql, setSql] = useState(initialSql ?? starterSql);
   const [parameters, setParameters] = useState(["", "", ""]);
   const [view, setView] = useState<"tree" | "diff">("tree");
   const [confirming, setConfirming] = useState(false);
   const [status, setStatus] = useState(
     "Ready · plain EXPLAIN does not execute the query",
   );
-  const [currentPlan, setCurrentPlan] = useState(plan);
+  const [currentPlan, setCurrentPlan] = useState<PlanNode | null>(plan ?? null);
   const [runId, setRunId] = useState<string | null>(null);
   const [exportJson, setExportJson] = useState<string | null>(null);
+  const [exportMarkdown, setExportMarkdown] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<
     Array<{ code: string; severity: string; message: string }>
@@ -114,12 +127,23 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
       analyze ? "Running guarded EXPLAIN ANALYZE…" : "Running safe EXPLAIN…",
     );
     try {
+      const maximumParameter = [...sql.matchAll(/\$(\d+)/g)].reduce(
+        (maximum, match) => Math.max(maximum, Number(match[1])),
+        0,
+      );
+      const boundParameters = parameters.slice(0, maximumParameter);
       let confirmationToken: string | undefined;
       if (analyze) {
         const confirmation = await fetch("/api/explain/confirm", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ sql, acknowledgement: "RUN EXPLAIN ANALYZE" }),
+          body: JSON.stringify({
+            sql,
+            source: sourceKey,
+            schema,
+            parameters: boundParameters,
+            acknowledgement: "RUN EXPLAIN ANALYZE",
+          }),
         });
         const confirmationBody = (await confirmation.json()) as {
           token?: string;
@@ -131,16 +155,14 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
           );
         confirmationToken = confirmationBody.token;
       }
-      const maximumParameter = [...sql.matchAll(/\$(\d+)/g)].reduce(
-        (maximum, match) => Math.max(maximum, Number(match[1])),
-        0,
-      );
       const response = await fetch("/api/explain", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           sql,
-          parameters: parameters.slice(0, maximumParameter),
+          source: sourceKey,
+          schema,
+          parameters: boundParameters,
           analyze,
           confirmationToken,
           statementTimeoutMs: 3_000,
@@ -151,7 +173,7 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
       const body = (await response.json()) as {
         plan?: unknown;
         runId?: string | null;
-        exports?: { json?: string };
+        exports?: { json?: string; markdown?: string };
         metrics?: {
           executionTimeMs?: number | null;
           planningTimeMs?: number | null;
@@ -165,6 +187,7 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
       if (mapped) setCurrentPlan(mapped);
       setRunId(body.runId ?? null);
       setExportJson(body.exports?.json ?? null);
+      setExportMarkdown(body.exports?.markdown ?? null);
       setWarnings(body.warnings ?? []);
       const elapsed = analyze
         ? body.metrics?.executionTimeMs
@@ -182,21 +205,36 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
     }
   };
 
-  const download = () => {
-    if (!exportJson) return;
+  const download = (format: "json" | "markdown") => {
+    const content = format === "json" ? exportJson : exportMarkdown;
+    if (!content) return;
     const url = URL.createObjectURL(
-      new Blob([exportJson], { type: "application/json" }),
+      new Blob([content], {
+        type: format === "json" ? "application/json" : "text/markdown",
+      }),
     );
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `index-analyzer-plan-${runId ?? "latest"}.json`;
+    anchor.download = `index-analyzer-plan-${runId ?? "latest"}.${format === "json" ? "json" : "md"}`;
     anchor.click();
     URL.revokeObjectURL(url);
   };
 
   const loadHistory = async () => {
     try {
-      const response = await fetch("/api/plans?limit=50", {
+      const sourceQuery = sourceKey
+        ? `?source=${encodeURIComponent(sourceKey)}`
+        : "";
+      const healthResponse = await fetch(`/api/health${sourceQuery}`, {
+        cache: "no-store",
+      });
+      const health = (await healthResponse.json()) as {
+        sourceDatabaseId?: number | null;
+      };
+      const parameters = new URLSearchParams({ limit: "50" });
+      if (health.sourceDatabaseId)
+        parameters.set("sourceDatabaseId", String(health.sourceDatabaseId));
+      const response = await fetch(`/api/plans?${parameters}`, {
         cache: "no-store",
       });
       const body = (await response.json()) as {
@@ -351,6 +389,19 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
               <Play />
               Run EXPLAIN
             </button>
+            {runId ? (
+              <a
+                className="icon-button"
+                aria-label="Analyze saved plan with AI"
+                href={contextualHref("/advisor", {
+                  source: sourceKey,
+                  schema,
+                  parameters: { planId: runId },
+                })}
+              >
+                <Bot />
+              </a>
+            ) : null}
             <button
               className="button danger"
               onClick={() => setConfirming(true)}
@@ -371,7 +422,7 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
           </div>
         </section>
 
-        <section className="card plan-panel">
+        <section className="card plan-panel" id="plan-workspace">
           <div className="plan-toolbar">
             <div className="section-tabs" style={{ margin: 0 }}>
               <button
@@ -409,25 +460,47 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
             <button
               className="icon-button"
               style={{ marginLeft: 4 }}
-              aria-label="Export plan"
-              onClick={download}
+              aria-label="Export plan as JSON"
+              onClick={() => download("json")}
               disabled={!exportJson}
+            >
+              <Download />
+            </button>
+            <button
+              className="icon-button"
+              aria-label="Export plan as Markdown"
+              onClick={() => download("markdown")}
+              disabled={!exportMarkdown}
             >
               <Download />
             </button>
           </div>
           {view === "tree" ? (
-            <PlanTree root={currentPlan} />
+            currentPlan ? (
+              <PlanTree root={currentPlan} />
+            ) : (
+              <div className="empty-state">
+                <div>
+                  <h2>No plan has been executed</h2>
+                  <p>
+                    Run a plain EXPLAIN to load measured planner evidence from
+                    {schema ? ` the ${schema} schema` : " the selected target"}.
+                  </p>
+                </div>
+              </div>
+            )
           ) : (
-            <PlanDiff
-              history={history}
-              baselineRunId={baselineRunId}
-              candidateRunId={candidateRunId}
-              setBaselineRunId={setBaselineRunId}
-              setCandidateRunId={setCandidateRunId}
-              compare={() => void compare()}
-              diff={planDiff}
-            />
+            <div id="plan-history">
+              <PlanDiff
+                history={history}
+                baselineRunId={baselineRunId}
+                candidateRunId={candidateRunId}
+                setBaselineRunId={setBaselineRunId}
+                setCandidateRunId={setCandidateRunId}
+                compare={() => void compare()}
+                diff={planDiff}
+              />
+            </div>
           )}
           <div className="payload-footer">
             <Check size={12} color="var(--green)" style={{ marginRight: 6 }} />

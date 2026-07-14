@@ -153,7 +153,10 @@ export interface IndexRecord {
   predicate?: string | null;
   expressions?: string[];
   unique?: boolean;
+  primary?: boolean;
+  constraintBacked?: boolean;
   valid?: boolean;
+  ready?: boolean;
   sizeBytes?: number;
   scans?: number;
 }
@@ -195,6 +198,11 @@ export interface MissingIndexEvidence {
   rowsRemovedByFilter: number;
   score: number;
   evidence: string[];
+}
+
+export interface MissingIndexCandidate extends MissingIndexEvidence {
+  confidence: "medium" | "high";
+  recommendation: string;
 }
 
 export interface MaintenanceInput {

@@ -3,9 +3,11 @@ import { CircleOff, CloudOff } from "lucide-react";
 export function EmptyState({
   title = "Nothing to show",
   detail = "No records match the current context and filters.",
+  onClear,
 }: {
   title?: string;
   detail?: string;
+  onClear?: () => void;
 }) {
   return (
     <div className="empty-state">
@@ -15,7 +17,11 @@ export function EmptyState({
         </span>
         <h2>{title}</h2>
         <p>{detail}</p>
-        <button className="button">Clear filters</button>
+        {onClear ? (
+          <button className="button" onClick={onClear}>
+            Clear filters
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -45,7 +51,7 @@ export function ErrorState({ retry }: { retry?: () => void }) {
 
 export function PageSkeleton() {
   return (
-    <div className="page" aria-label="Loading">
+    <div className="page" role="status" aria-label="Loading" aria-busy="true">
       <div
         className="skeleton"
         style={{ width: 240, height: 30, marginBottom: 24 }}

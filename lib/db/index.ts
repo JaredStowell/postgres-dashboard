@@ -8,6 +8,7 @@ export * from "./database";
 export * from "./explain";
 export * from "./findings";
 export * from "./history";
+export * from "./hypopg";
 export * from "./indexes";
 export * from "./maintenance";
 export * from "./plans";

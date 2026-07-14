@@ -3,6 +3,9 @@ import { defineConfig } from "vite";
 import vinext from "vinext";
 
 export default defineConfig({
+  optimizeDeps: {
+    exclude: ["cloudflare:workers"],
+  },
   plugins: [
     vinext(),
     cloudflare({

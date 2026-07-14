@@ -1,17 +1,22 @@
 import { BookOpen } from "lucide-react";
-import { demoRepository } from "@/lib/demo/data";
 import { PlanLab } from "@/components/plans/plan-lab";
 import { PageHeader } from "@/components/ui/page-header";
 import { DataSourceBadge } from "@/components/ui/data-source-badge";
 import type { DataSourceState } from "@/lib/server/dashboard-data";
 
 export function PlansPage({
+  sourceKey,
+  schema,
+  initialSql,
   source = {
     mode: "live",
     label: "Database API",
     detail: "EXPLAIN executes against the selected target.",
   },
 }: {
+  sourceKey?: string;
+  schema?: string;
+  initialSql?: string;
   source?: DataSourceState;
 }) {
   return (
@@ -23,14 +28,14 @@ export function PlansPage({
         actions={
           <>
             <DataSourceBadge source={source} />
-            <a className="button" href="/api/plans?limit=50">
+            <a className="button" href="#plan-workspace">
               <BookOpen />
-              Plan history JSON
+              Plan workspace
             </a>
           </>
         }
       />
-      <PlanLab plan={demoRepository.plan()} />
+      <PlanLab sourceKey={sourceKey} schema={schema} initialSql={initialSql} />
     </div>
   );
 }

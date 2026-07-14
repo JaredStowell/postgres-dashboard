@@ -4,13 +4,15 @@ export function Card({
   children,
   className = "",
   style,
+  id,
 }: {
   children: ReactNode;
   className?: string;
   style?: CSSProperties;
+  id?: string;
 }) {
   return (
-    <section className={`card ${className}`.trim()} style={style}>
+    <section className={`card ${className}`.trim()} style={style} id={id}>
       {children}
     </section>
   );

@@ -2,11 +2,14 @@ import { ArrowLeft, Bot, FlaskConical } from "lucide-react";
 import { demoRepository } from "@/lib/demo/data";
 import type { QueryStat } from "@/lib/demo/types";
 import type { DataSourceState } from "@/lib/server/dashboard-data";
+import type { QueryDetailContext } from "@/lib/server/dashboard-data";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { PageHeader } from "@/components/ui/page-header";
 import { TrendChart } from "@/components/ui/sparkline";
 import { DataSourceBadge } from "@/components/ui/data-source-badge";
+import { EmptyState } from "@/components/ui/states";
+import { contextualHref } from "@/lib/presentation/inventory";
 
 function colorSql(sql: string) {
   const chunks = sql.split(
@@ -38,20 +41,54 @@ function colorSql(sql: string) {
 export function QueryDetailPage({
   id,
   query: suppliedQuery,
+  context = { plans: [], findings: [], relations: [], indexes: [] },
   source = {
     mode: "unavailable",
     label: "Sample preview",
     detail: "No database data was supplied.",
   },
+  sourceKey,
+  schema,
 }: {
   id: string;
   query?: QueryStat | null;
+  context?: QueryDetailContext;
   source?: DataSourceState;
+  sourceKey?: string;
+  schema?: string;
 }) {
-  const query = suppliedQuery ?? demoRepository.query(id);
+  const query =
+    suppliedQuery ??
+    (source.mode === "unavailable" ? demoRepository.query(id) : null);
+  if (!query) {
+    return (
+      <div className="page">
+        <a
+          href={contextualHref("/queries", { source: sourceKey, schema })}
+          className="page-eyebrow"
+        >
+          <ArrowLeft size={12} /> Back to queries
+        </a>
+        <PageHeader
+          eyebrow={`Query ${id}`}
+          title="Query not found"
+          description="This query ID is not present in the current pg_stat_statements window for the selected database."
+          actions={<DataSourceBadge source={source} />}
+        />
+        <EmptyState
+          title="No matching statement"
+          detail="The statistics window may have reset, or the query belongs to another configured database target."
+        />
+      </div>
+    );
+  }
   return (
     <div className="page">
-      <a href="/queries" className="page-eyebrow" style={{ marginBottom: 12 }}>
+      <a
+        href={contextualHref("/queries", { source: sourceKey, schema })}
+        className="page-eyebrow"
+        style={{ marginBottom: 12 }}
+      >
         <ArrowLeft size={12} />
         Back to queries
       </a>
@@ -62,11 +99,25 @@ export function QueryDetailPage({
         actions={
           <>
             <DataSourceBadge source={source} />
-            <a href="/plans" className="button">
+            <a
+              href={contextualHref("/plans", {
+                source: sourceKey,
+                schema,
+                parameters: { queryId: query.id },
+              })}
+              className="button"
+            >
               <FlaskConical />
               Explain
             </a>
-            <a href="/advisor" className="button primary">
+            <a
+              href={contextualHref("/advisor", {
+                source: sourceKey,
+                schema,
+                parameters: { queryId: query.id },
+              })}
+              className="button primary"
+            >
               <Bot />
               Analyze with AI
             </a>
@@ -127,7 +178,11 @@ export function QueryDetailPage({
           <Card>
             <CardHeader
               title="Mean execution time"
-              subtitle="Collected reset-aware points"
+              subtitle={
+                query.points.length > 1
+                  ? "Collected reset-aware points"
+                  : "No usable collection history yet"
+              }
               action={
                 <Badge tone={query.status === "regressed" ? "rose" : "green"}>
                   {query.status}
@@ -221,6 +276,100 @@ export function QueryDetailPage({
           </Card>
         </div>
       </div>
+      <div className="content-grid equal">
+        <Card id="plan-history">
+          <CardHeader
+            title="Saved plan history"
+            subtitle="Safely matched normalized query shape"
+            action={<Badge tone="violet">{context.plans.length}</Badge>}
+          />
+          <CardBody>
+            <div className="analysis-list">
+              {context.plans.map((plan) => (
+                <a
+                  className="analysis-card"
+                  href={contextualHref("/advisor", {
+                    source: sourceKey,
+                    schema,
+                    parameters: { planId: plan.id, queryId: query.id },
+                  })}
+                  key={plan.id}
+                >
+                  <div className="analysis-head">
+                    <strong className="mono">{plan.id}</strong>
+                    <span className="analysis-time">
+                      {new Date(plan.createdAt).toLocaleString()}
+                    </span>
+                  </div>
+                  <span className="analysis-meta">Open in AI Advisor</span>
+                </a>
+              ))}
+              {context.plans.length === 0 ? (
+                <div className="privacy-note">
+                  No safely matched saved plan yet.
+                </div>
+              ) : null}
+            </div>
+          </CardBody>
+        </Card>
+        <Card>
+          <CardHeader
+            title="Related findings"
+            subtitle="Query and proven relation evidence"
+            action={<Badge tone="amber">{context.findings.length}</Badge>}
+          />
+          <CardBody>
+            <div className="analysis-list">
+              {context.findings.map((finding) => (
+                <a
+                  className="analysis-card"
+                  href={finding.href}
+                  key={finding.id}
+                >
+                  <div className="analysis-head">
+                    <span className="severity-mark" />
+                    <strong>{finding.title}</strong>
+                    <span className="analysis-time">{finding.lastSeen}</span>
+                  </div>
+                  <p className="analysis-summary">{finding.description}</p>
+                </a>
+              ))}
+              {context.findings.length === 0 ? (
+                <div className="privacy-note">No related durable findings.</div>
+              ) : null}
+            </div>
+          </CardBody>
+        </Card>
+      </div>
+      <Card>
+        <CardHeader
+          title="Related index context"
+          subtitle={`${context.relations.length} proven relations`}
+          action={<Badge tone="cyan">{context.indexes.length} indexes</Badge>}
+        />
+        <CardBody>
+          <div className="analysis-list">
+            {context.indexes.map((index) => (
+              <div
+                className="privacy-note"
+                key={`${index.schema}.${index.table}.${index.name}`}
+              >
+                <span className="mono">
+                  {index.schema}.{index.table}.{index.name}
+                </span>
+                <span style={{ marginLeft: "auto" }}>
+                  {(index.scans ?? 0).toLocaleString()} scans
+                </span>
+              </div>
+            ))}
+            {context.indexes.length === 0 ? (
+              <div className="privacy-note">
+                No related index context resolved.
+              </div>
+            ) : null}
+          </div>
+        </CardBody>
+      </Card>
     </div>
   );
 }

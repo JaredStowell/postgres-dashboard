@@ -21,6 +21,11 @@ export interface SqlClassification {
   reason: string | null;
 }
 
+export interface ConservativeAnalyzeRelation {
+  schema?: string;
+  relation: string;
+}
+
 interface SqlToken {
   value: string;
   depth: number;
@@ -57,16 +62,21 @@ const transactionKeywords = new Set([
   "SAVEPOINT",
   "SET",
 ]);
-const volatileFunctions = new Set([
-  "NEXTVAL",
-  "SETVAL",
-  "PG_ADVISORY_LOCK",
-  "PG_ADVISORY_XACT_LOCK",
-  "PG_NOTIFY",
-  "LO_IMPORT",
-  "LO_EXPORT",
-  "DBLINK",
-  "DBLINK_EXEC",
+const functionLikeSqlKeywords = new Set([
+  "ARRAY",
+  "AS",
+  "EXISTS",
+  "FILTER",
+  "FROM",
+  "GROUPING",
+  "IN",
+  "OVER",
+  "ROW",
+  "SELECT",
+  "TABLE",
+  "VALUES",
+  "WHERE",
+  "WITH",
 ]);
 
 function dollarTagAt(sql: string, index: number): string | null {
@@ -217,6 +227,36 @@ export function normalizeSql(sql: string): string {
   return sql.trim().replace(/;\s*$/, "").replace(/\s+/g, " ");
 }
 
+const analyzeIdentifier = `(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)`;
+const analyzeValue = `(?:\\$\\d+|'(?:''|[^'])*'|[-+]?\\d+(?:\\.\\d+)?)`;
+const analyzePredicate = `${analyzeIdentifier}\\s*(?:(?:=|<>|!=|<=|>=|<|>)\\s*${analyzeValue}|IS\\s+(?:NOT\\s+)?NULL)`;
+const analyzeOrder = `${analyzeIdentifier}(?:\\s+(?:ASC|DESC))?(?:\\s*,\\s*${analyzeIdentifier}(?:\\s+(?:ASC|DESC))?)*`;
+const conservativeAnalyzePattern = new RegExp(
+  `^SELECT\\s+\\*\\s+FROM\\s+(${analyzeIdentifier})(?:\\s*\\.\\s*(${analyzeIdentifier}))?` +
+    `(?:\\s+WHERE\\s+${analyzePredicate}(?:\\s+AND\\s+${analyzePredicate})*)?` +
+    `(?:\\s+ORDER\\s+BY\\s+${analyzeOrder})?(?:\\s+LIMIT\\s+\\d+)?$`,
+  "i",
+);
+
+function unquoteAnalyzeIdentifier(identifier: string): string {
+  return identifier.startsWith('"')
+    ? identifier.slice(1, -1).replaceAll('""', '"')
+    : identifier;
+}
+
+export function conservativeAnalyzeRelation(
+  sql: string,
+): ConservativeAnalyzeRelation | null {
+  const match = conservativeAnalyzePattern.exec(normalizeSql(sql));
+  if (!match?.[1]) return null;
+  return match[2]
+    ? {
+        schema: unquoteAnalyzeIdentifier(match[1]),
+        relation: unquoteAnalyzeIdentifier(match[2]),
+      }
+    : { relation: unquoteAnalyzeIdentifier(match[1]) };
+}
+
 export function redactSql(sql: string): string {
   let output = "";
   let i = 0;
@@ -287,9 +327,26 @@ export function classifySql(sql: string): SqlClassification {
   const hasWriteAnywhere = scanned.tokens.some(
     (token) => writeKeywords.has(token.value) || ddlKeywords.has(token.value),
   );
-  const containsVolatileFunction = scanned.tokens.some((token) =>
-    volatileFunctions.has(token.value),
+  const functionCalls = scanned.tokens
+    .filter(
+      (token, index) =>
+        scanned.tokens[index + 1]?.value === "(" &&
+        !functionLikeSqlKeywords.has(token.value),
+    )
+    .map((token) => token.value);
+  const redacted = redactSql(sql);
+  const qualifiedCalls = Array.from(
+    redacted.matchAll(
+      /(?:"([^"]+(?:""[^"]+)*)"|([A-Za-z_][A-Za-z0-9_$]*))\s*\.\s*(?:"([^"]+(?:""[^"]+)*)"|([A-Za-z_][A-Za-z0-9_$]*))\s*\(/g,
+    ),
   );
+  const unsafeQualifiedCall = qualifiedCalls.length > 0;
+  const quotedCall = /"(?:[^"]|"")+"\s*\(/.test(redacted);
+  const containsVolatileFunction =
+    unsafeQualifiedCall ||
+    quotedCall ||
+    functionCalls.length > 0 ||
+    /::|\bOPERATOR\s*\(/i.test(redacted);
   const nominallyReadOnly = ["select", "values", "show", "table"].includes(
     statementClass,
   );
@@ -329,7 +386,15 @@ export function validateExplainSql(
       ...classification,
       readOnly: false,
       reason:
-        "EXPLAIN ANALYZE rejects known volatile or side-effecting functions.",
+        "EXPLAIN ANALYZE rejects function calls, explicit casts, and custom operator syntax because rollback cannot reverse external side effects.",
+    };
+  }
+  if (analyze && !conservativeAnalyzeRelation(sql)) {
+    return {
+      ...classification,
+      readOnly: false,
+      reason:
+        "EXPLAIN ANALYZE conservative mode accepts SELECT * from one base table with optional simple predicates, ordering, and LIMIT. Use plain EXPLAIN for complex SQL.",
     };
   }
   return classification;
@@ -376,13 +441,39 @@ export async function createExplainConfirmationToken(
   sql: string,
   secret: string,
   issuedAt = Date.now(),
+  context: {
+    source?: string;
+    schema?: string;
+    parameters?: readonly unknown[];
+  } = {},
 ): Promise<string> {
   if (secret.length < 16)
     throw new Error(
       "Confirmation token secret must be at least 16 characters.",
     );
+  const sqlDigest = encodeBase64Url(
+    new Uint8Array(
+      await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(normalizeSql(sql)),
+      ),
+    ),
+  );
   const payload = encodeBase64Url(
-    JSON.stringify({ sql: redactSql(sql), issuedAt: Math.floor(issuedAt) }),
+    JSON.stringify({
+      sqlDigest,
+      parametersDigest: encodeBase64Url(
+        new Uint8Array(
+          await crypto.subtle.digest(
+            "SHA-256",
+            new TextEncoder().encode(JSON.stringify(context.parameters ?? [])),
+          ),
+        ),
+      ),
+      source: context.source ?? "",
+      schema: context.schema ?? "",
+      issuedAt: Math.floor(issuedAt),
+    }),
   );
   const signature = encodeBase64Url(await hmac(payload, secret));
   return `${payload}.${signature}`;
@@ -403,6 +494,11 @@ export async function verifyExplainConfirmationToken(
   sql: string,
   secret: string,
   options: { now?: number; maxAgeMs?: number } = {},
+  context: {
+    source?: string;
+    schema?: string;
+    parameters?: readonly unknown[];
+  } = {},
 ): Promise<boolean> {
   try {
     const [payload, signature, extra] = token.split(".");
@@ -412,13 +508,35 @@ export async function verifyExplainConfirmationToken(
     const decoded = JSON.parse(
       new TextDecoder().decode(decodeBase64Url(payload)),
     ) as {
-      sql?: unknown;
+      sqlDigest?: unknown;
+      parametersDigest?: unknown;
+      source?: unknown;
+      schema?: unknown;
       issuedAt?: unknown;
     };
     const now = options.now ?? Date.now();
     const maxAgeMs = options.maxAgeMs ?? 60_000;
+    const sqlDigest = encodeBase64Url(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(normalizeSql(sql)),
+        ),
+      ),
+    );
+    const parametersDigest = encodeBase64Url(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(JSON.stringify(context.parameters ?? [])),
+        ),
+      ),
+    );
     return (
-      decoded.sql === redactSql(sql) &&
+      decoded.sqlDigest === sqlDigest &&
+      decoded.parametersDigest === parametersDigest &&
+      decoded.source === (context.source ?? "") &&
+      decoded.schema === (context.schema ?? "") &&
       typeof decoded.issuedAt === "number" &&
       decoded.issuedAt <= now + 1_000 &&
       now - decoded.issuedAt <= maxAgeMs

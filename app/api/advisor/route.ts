@@ -6,8 +6,10 @@ import {
   failAiAnalysis,
   listAiAnalyses,
 } from "@/lib/db/advisor";
+import { listRegisteredDatabases } from "@/lib/db/history";
 import {
   ApiError,
+  assertJsonByteSize,
   boundedInteger,
   jsonResponse,
   parseJson,
@@ -57,7 +59,8 @@ const indexSchema = z
 
 const requestSchema = z
   .object({
-    query: z.string().min(1).max(50_000),
+    source: z.string().min(1).max(63).optional(),
+    query: z.string().min(1).max(50_000).optional(),
     plan: z.unknown().optional(),
     tables: z.array(tableSchema).max(100).default([]),
     indexes: z.array(indexSchema).max(250).default([]),
@@ -68,6 +71,24 @@ const requestSchema = z
         database: z.string().max(255).optional(),
         schema: z.string().max(255).optional(),
         sourceLabel: z.string().max(255).optional(),
+        queryId: z
+          .string()
+          .regex(/^-?\d+$/)
+          .max(32)
+          .optional(),
+        planId: z.uuid().optional(),
+        relation: z.string().max(511).optional(),
+        index: z.string().max(255).optional(),
+        finding: z
+          .object({
+            id: z.string().min(1).max(64),
+            category: z.string().min(1).max(100),
+            severity: z.string().min(1).max(50),
+            title: z.string().min(1).max(500),
+            summary: z.string().min(1).max(4_000),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .default({}),
@@ -79,11 +100,32 @@ const requestSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      !value.query &&
+      !value.plan &&
+      !value.context.finding &&
+      value.tables.length === 0 &&
+      value.indexes.length === 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["query"],
+        message:
+          "A query, saved plan, finding, relation, or index context is required",
+      });
+    }
     if (value.persist && !value.sourceDatabaseId) {
       context.addIssue({
         code: "custom",
         path: ["sourceDatabaseId"],
         message: "sourceDatabaseId is required when persist is enabled",
+      });
+    }
+    if (value.persist && !value.source) {
+      context.addIssue({
+        code: "custom",
+        path: ["source"],
+        message: "source is required when persist is enabled",
       });
     }
   });
@@ -98,9 +140,9 @@ async function sha256(value: string): Promise<string> {
 
 export const GET = route(async (request: Request) => {
   const url = new URL(request.url);
-  const limit = boundedInteger(url.searchParams.get("limit"), 50, {
+  const limit = boundedInteger(url.searchParams.get("limit"), 10, {
     min: 1,
-    max: 250,
+    max: 10,
     name: "limit",
   });
   const offset = boundedInteger(url.searchParams.get("offset"), 0, {
@@ -168,6 +210,33 @@ export const POST = route(async (request: Request) => {
   let controlDb: Awaited<ReturnType<typeof getControlDatabase>> | null = null;
   if (input.persist) {
     controlDb = await getControlDatabase();
+    const registered = await listRegisteredDatabases(controlDb);
+    const selectedDatabase = registered.find(
+      (database) =>
+        database.sourceDatabaseId === input.sourceDatabaseId &&
+        database.sourceKey === input.source,
+    );
+    if (!selectedDatabase) {
+      throw new ApiError(
+        400,
+        "advisor_source_mismatch",
+        "The persisted source database does not belong to the selected target.",
+      );
+    }
+    if (input.explainRunId) {
+      const ownedPlan = await controlDb.query(
+        `SELECT 1 FROM index_analyzer.explain_runs
+         WHERE id = $1 AND source_database_id = $2`,
+        [input.explainRunId, selectedDatabase.sourceDatabaseId],
+      );
+      if (ownedPlan.rowCount !== 1) {
+        throw new ApiError(
+          400,
+          "advisor_plan_mismatch",
+          "The selected plan does not belong to the persisted database target.",
+        );
+      }
+    }
     analysisId = await createAiAnalysisRequest(controlDb, {
       sourceDatabaseId: input.sourceDatabaseId!,
       explainRunId: input.explainRunId,
@@ -183,6 +252,12 @@ export const POST = route(async (request: Request) => {
     const result = await analyzeAiPayload(built.payload, {
       env,
       mode: input.mode,
+    });
+    assertJsonByteSize(result.analysis, {
+      maxBytes: 256 * 1_024,
+      code: "ai_result_too_large",
+      message:
+        "The structured AI analysis exceeds the 256 KiB response and persistence limit.",
     });
     if (analysisId && controlDb) {
       const validationSteps = result.analysis.recommendations.flatMap(

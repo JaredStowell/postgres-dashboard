@@ -7,6 +7,13 @@ import type { DataSourceState } from "@/lib/server/dashboard-data";
 
 export function AdvisorPage({
   analyses,
+  sourceKey,
+  queryId,
+  findingId,
+  planId,
+  relationSchema,
+  relationTable,
+  index,
   source = {
     mode: "unavailable",
     label: "Sample preview",
@@ -15,6 +22,13 @@ export function AdvisorPage({
 }: {
   analyses?: Analysis[];
   source?: DataSourceState;
+  sourceKey?: string;
+  queryId?: string;
+  findingId?: string;
+  planId?: string;
+  relationSchema?: string;
+  relationTable?: string;
+  index?: string;
 }) {
   return (
     <div className="page">
@@ -32,7 +46,16 @@ export function AdvisorPage({
           </>
         }
       />
-      <AdvisorWorkspace analyses={analyses} />
+      <AdvisorWorkspace
+        analyses={analyses}
+        sourceKey={sourceKey}
+        queryId={queryId}
+        findingId={findingId}
+        planId={planId}
+        relationSchema={relationSchema}
+        relationTable={relationTable}
+        index={index}
+      />
     </div>
   );
 }
