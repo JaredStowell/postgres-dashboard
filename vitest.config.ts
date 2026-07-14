@@ -13,5 +13,12 @@ export default defineConfig({
       thresholds: { lines: 80, functions: 80, branches: 75, statements: 80 },
     },
   },
-  resolve: { alias: { "@": fileURLToPath(new URL(".", import.meta.url)) } },
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL(".", import.meta.url)),
+      "cloudflare:workers": fileURLToPath(
+        new URL("./tests/mocks/cloudflare-workers.ts", import.meta.url),
+      ),
+    },
+  },
 });

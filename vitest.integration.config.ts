@@ -10,5 +10,12 @@ export default defineConfig({
     hookTimeout: 30_000,
     maxConcurrency: 1,
   },
-  resolve: { alias: { "@": fileURLToPath(new URL(".", import.meta.url)) } },
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL(".", import.meta.url)),
+      "cloudflare:workers": fileURLToPath(
+        new URL("./tests/mocks/cloudflare-workers.ts", import.meta.url),
+      ),
+    },
+  },
 });
