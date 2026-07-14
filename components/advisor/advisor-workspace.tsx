@@ -12,50 +12,131 @@ import {
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
-import { analyses, plan, queries } from "@/lib/demo/data";
+import { analyses as demoAnalyses, queries } from "@/lib/demo/data";
+import type { AiAnalysisResponse } from "@/lib/ai/schema";
+import type { Analysis } from "@/lib/demo/types";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 
-const payload = {
-  query: queries[0]!.query,
-  parameters: {
-    $1: "[REDACTED_UUID]",
-    $2: "[REDACTED_TEXT]",
-    $3: "[REDACTED_INT]",
-  },
-  plan: {
-    node: plan.name,
-    actual_time_ms: plan.time,
-    children: ["Sort", "Nested Loop", "Bitmap Heap Scan", "Index Scan"],
-  },
-  relations: [
-    {
-      name: "public.orders",
-      rows_estimate: 42420918,
-      total_size: "31.4 GB",
-      indexes: ["orders_store_status_created_idx", "orders_customer_id_idx"],
-    },
-    {
-      name: "public.customers",
-      rows_estimate: 12800921,
-      total_size: "11.2 GB",
-      indexes: ["customers_pkey"],
-    },
-  ],
-  settings: {
-    random_page_cost: "1.1",
-    effective_cache_size: "24GB",
-    work_mem: "16MB",
-  },
+type Preview = {
+  payload: unknown;
+  preview: string;
+  bytes: number;
+  limitBytes: number;
+  truncated: boolean;
+  omissions: string[];
+  canSubmit: boolean;
+  model: string;
 };
 
-export function AdvisorWorkspace() {
+export function AdvisorWorkspace({
+  analyses = demoAnalyses,
+}: {
+  analyses?: Analysis[];
+}) {
   const [mode, setMode] = useState<"balanced" | "deep">("balanced");
   const [showPayload, setShowPayload] = useState(false);
   const [state, setState] = useState<"ready" | "working" | "done">("ready");
-  const start = () => {
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [analysis, setAnalysis] = useState<AiAnalysisResponse | null>(null);
+  const [metadata, setMetadata] = useState<{
+    model?: string;
+    providerRequestId?: string | null;
+  } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const requestInput = async () => {
+    const [queryResponse, indexResponse, healthResponse] = await Promise.all([
+      fetch("/api/queries?limit=1", { cache: "no-store" }),
+      fetch("/api/indexes?limit=100", { cache: "no-store" }),
+      fetch("/api/health", { cache: "no-store" }),
+    ]);
+    const queryBody = (await queryResponse.json()) as {
+      queries?: Array<Record<string, unknown>>;
+    };
+    const indexBody = (await indexResponse.json()) as {
+      indexes?: Array<Record<string, unknown>>;
+    };
+    const healthBody = (await healthResponse.json()) as {
+      database?: string;
+      sourceDatabaseId?: number | null;
+      capabilities?: { settings?: Record<string, string | null> };
+    };
+    const query = queryBody.queries?.[0];
+    return {
+      query: typeof query?.query === "string" ? query.query : queries[0]!.query,
+      indexes: (indexBody.indexes ?? []).map((index) => ({
+        schema: String(index.schema ?? "public"),
+        table: String(index.table ?? "unknown"),
+        name: String(index.name ?? "unknown"),
+        definition: String(index.definition ?? ""),
+        scans: Number(index.scans ?? 0),
+        sizeBytes: Number(index.sizeBytes ?? 0),
+      })),
+      settings: healthBody.capabilities?.settings ?? {},
+      context: {
+        database: healthBody.database,
+        sourceLabel: "selected target",
+      },
+      sourceDatabaseId: healthBody.sourceDatabaseId ?? undefined,
+      mode,
+    };
+  };
+
+  const previewPayload = async () => {
+    setError(null);
+    try {
+      const input = await requestInput();
+      const response = await fetch("/api/advisor", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const body = (await response.json()) as {
+        preview?: Preview;
+        error?: { message?: string };
+      };
+      if (!response.ok || !body.preview)
+        throw new Error(body.error?.message ?? "Payload preview failed");
+      setPreview(body.preview);
+      setShowPayload(true);
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Payload preview failed",
+      );
+    }
+  };
+
+  const start = async () => {
     setState("working");
-    window.setTimeout(() => setState("done"), 700);
+    setError(null);
+    try {
+      const input = await requestInput();
+      const response = await fetch("/api/advisor", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ...input,
+          submit: true,
+          persist: Boolean(input.sourceDatabaseId),
+        }),
+      });
+      const body = (await response.json()) as {
+        preview?: Preview;
+        analysis?: AiAnalysisResponse;
+        metadata?: { model?: string; providerRequestId?: string | null };
+        error?: { message?: string };
+      };
+      if (!response.ok || !body.analysis)
+        throw new Error(body.error?.message ?? "Analysis failed");
+      setPreview(body.preview ?? null);
+      setAnalysis(body.analysis);
+      setMetadata(body.metadata ?? null);
+      setState("done");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Analysis failed");
+      setState("ready");
+    }
   };
   return (
     <>
@@ -91,14 +172,16 @@ export function AdvisorWorkspace() {
           >
             <button
               className="button"
-              onClick={() => setShowPayload((value) => !value)}
+              onClick={() =>
+                showPayload ? setShowPayload(false) : void previewPayload()
+              }
             >
               <Eye />
               {showPayload ? "Hide" : "Preview"} payload
             </button>
             <button
               className="button primary"
-              onClick={start}
+              onClick={() => void start()}
               disabled={state === "working"}
             >
               {state === "working" ? <RotateCcw /> : <Send />}
@@ -112,42 +195,56 @@ export function AdvisorWorkspace() {
           </div>
         </div>
       </section>
-      {showPayload ? <PayloadPreview /> : null}
-      {state === "done" ? <AnalysisResult /> : null}
+      {error ? (
+        <div
+          className="privacy-note"
+          style={{ marginTop: 12, color: "var(--rose)" }}
+        >
+          {error}
+        </div>
+      ) : null}
+      {showPayload && preview ? <PayloadPreview preview={preview} /> : null}
+      {state === "done" && analysis ? (
+        <AnalysisResult analysis={analysis} metadata={metadata} />
+      ) : null}
       <div
         className="content-grid"
         style={{ gridTemplateColumns: "minmax(0,1fr) minmax(330px,.55fr)" }}
       >
-        <Card>
-          <CardHeader
-            title="Analysis history"
-            subtitle="Saved, structured responses"
-            action={<Badge tone="violet">3 analyses</Badge>}
-          />
-          <CardBody>
-            <div className="analysis-list">
-              {analyses.map((analysis) => (
-                <div
-                  className={`analysis-card severity-${analysis.severity}`}
-                  key={analysis.id}
-                >
-                  <div className="analysis-head">
-                    <span className="severity-mark" />
-                    <strong>{analysis.title}</strong>
-                    <span className="analysis-time">{analysis.createdAt}</span>
+        <div id="analysis-history">
+          <Card>
+            <CardHeader
+              title="Analysis history"
+              subtitle="Saved, structured responses"
+              action={<Badge tone="violet">3 analyses</Badge>}
+            />
+            <CardBody>
+              <div className="analysis-list">
+                {analyses.map((analysis) => (
+                  <div
+                    className={`analysis-card severity-${analysis.severity}`}
+                    key={analysis.id}
+                  >
+                    <div className="analysis-head">
+                      <span className="severity-mark" />
+                      <strong>{analysis.title}</strong>
+                      <span className="analysis-time">
+                        {analysis.createdAt}
+                      </span>
+                    </div>
+                    <p className="analysis-summary">{analysis.summary}</p>
+                    <div className="analysis-meta">
+                      <span>{analysis.model}</span>
+                      <span>{analysis.confidence}% confidence</span>
+                      <span>{analysis.tokens.toLocaleString()} tokens</span>
+                      <ChevronRight size={11} style={{ marginLeft: "auto" }} />
+                    </div>
                   </div>
-                  <p className="analysis-summary">{analysis.summary}</p>
-                  <div className="analysis-meta">
-                    <span>{analysis.model}</span>
-                    <span>{analysis.confidence}% confidence</span>
-                    <span>{analysis.tokens.toLocaleString()} tokens</span>
-                    <ChevronRight size={11} style={{ marginLeft: "auto" }} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardBody>
-        </Card>
+                ))}
+              </div>
+            </CardBody>
+          </Card>
+        </div>
         <Card>
           <CardHeader title="Privacy controls" />
           <CardBody>
@@ -195,7 +292,7 @@ function Privacy({
   );
 }
 
-function PayloadPreview() {
+function PayloadPreview({ preview }: { preview: Preview }) {
   return (
     <Card
       className="payload-preview"
@@ -204,23 +301,35 @@ function PayloadPreview() {
       <CardHeader
         title="Payload preview"
         subtitle="Exactly what will be transmitted"
-        action={<Badge tone="green">18.7 kB · within limit</Badge>}
+        action={
+          <Badge tone={preview.bytes <= preview.limitBytes ? "green" : "rose"}>
+            {(preview.bytes / 1024).toFixed(1)} kB ·{" "}
+            {preview.canSubmit ? "ready" : "provider disabled"}
+          </Badge>
+        }
       />
-      <pre className="payload-code">{JSON.stringify(payload, null, 2)}</pre>
+      <pre className="payload-code">{preview.preview}</pre>
       <div className="payload-footer">
         <ShieldCheck
           size={12}
           color="var(--green)"
           style={{ marginRight: 6 }}
         />
-        3 literals redacted · 0 result rows · comments stripped
+        Literals redacted · 0 result rows · comments stripped
+        {preview.truncated ? ` · omitted: ${preview.omissions.join(", ")}` : ""}
         <span style={{ marginLeft: "auto" }}>store: false</span>
       </div>
     </Card>
   );
 }
 
-function AnalysisResult() {
+function AnalysisResult({
+  analysis,
+  metadata,
+}: {
+  analysis: AiAnalysisResponse;
+  metadata: { model?: string; providerRequestId?: string | null } | null;
+}) {
   return (
     <Card
       style={
@@ -232,8 +341,12 @@ function AnalysisResult() {
     >
       <CardHeader
         title="Fresh analysis"
-        subtitle="gpt-5.6-terra · req_7f92…1c11"
-        action={<Badge tone="violet">94% confidence</Badge>}
+        subtitle={`${metadata?.model ?? "configured model"} · ${metadata?.providerRequestId ?? "local response"}`}
+        action={
+          <Badge tone="violet">
+            {Math.round(analysis.confidence * 100)}% confidence
+          </Badge>
+        }
       />
       <CardBody>
         <div
@@ -250,20 +363,15 @@ function AnalysisResult() {
             <Sparkles />
           </span>
           <div>
-            <strong style={{ fontSize: 13 }}>
-              The workload shift invalidated the planner’s selectivity
-              assumption
-            </strong>
+            <strong style={{ fontSize: 13 }}>{analysis.summary}</strong>
             <p style={{ color: "var(--muted)", fontSize: 10 }}>
-              The current composite index matches the predicate and sort, but
-              status skew has grown enough that PostgreSQL underestimates result
-              rows by 4.5×. Refresh extended statistics first; only then
-              evaluate the covering index candidate.
+              {analysis.caveats.join(" ") ||
+                "Review the evidence and validate every recommendation in a non-production environment."}
             </p>
             <div className="privacy-note">
               <Check />
-              Validation order: ANALYZE table → create dependency statistics →
-              capture a new plan → compare shared reads → review covering index.
+              {analysis.recommendations[0]?.validationSteps.join(" → ") ??
+                "No automated change is proposed."}
             </div>
           </div>
         </div>

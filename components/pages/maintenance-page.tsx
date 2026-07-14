@@ -3,44 +3,66 @@
 import { useState } from "react";
 import { AlertTriangle, Copy, Gauge, Play, RefreshCw } from "lucide-react";
 import { demoRepository } from "@/lib/demo/data";
+import type { MaintenanceRecord } from "@/lib/demo/types";
+import type { ProgressOperation } from "@/lib/db/maintenance";
+import type { DataSourceState } from "@/lib/server/dashboard-data";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { MetricCard } from "@/components/ui/metric-card";
 import { PageHeader } from "@/components/ui/page-header";
+import { DataSourceBadge } from "@/components/ui/data-source-badge";
 
-export function MaintenancePage() {
+export function MaintenancePage({
+  maintenance = demoRepository.maintenance(),
+  progress = [],
+  pgstattupleAvailable = false,
+  source = {
+    mode: "unavailable",
+    label: "Sample preview",
+    detail: "No database data was supplied.",
+  },
+}: {
+  maintenance?: MaintenanceRecord[];
+  progress?: ProgressOperation[];
+  pgstattupleAvailable?: boolean;
+  source?: DataSourceState;
+}) {
   const [tab, setTab] = useState<"tables" | "progress">("tables");
-  const rows = demoRepository.maintenance();
+  const [bloatResult, setBloatResult] = useState<string | null>(null);
+  const rows = maintenance;
+  const recommended = rows[0];
+  const totalDead = rows.reduce((total, row) => total + row.deadRows, 0);
+  const totalLive = rows.reduce((total, row) => total + row.liveRows, 0);
   const metrics = [
     {
       label: "Dead tuples",
-      value: "4.1M",
-      detail: "6.8% weighted ratio",
-      trend: 4.2,
+      value: totalDead.toLocaleString(),
+      detail: `${((totalDead / Math.max(1, totalLive + totalDead)) * 100).toFixed(1)}% weighted ratio`,
+      trend: 0,
       tone: "rose" as const,
       points: [32, 34, 37, 39, 42, 45, 49, 52, 57, 61, 66, 70],
     },
     {
       label: "Tables at risk",
-      value: "3",
-      detail: "1 high · 2 medium",
-      trend: 50,
+      value: String(rows.filter((row) => row.risk !== "low").length),
+      detail: `${rows.filter((row) => row.risk === "high").length} high · ${rows.filter((row) => row.risk === "medium").length} medium`,
+      trend: 0,
       tone: "amber" as const,
       points: [18, 18, 18, 25, 25, 25, 33, 33, 43, 50, 58, 65],
     },
     {
       label: "Oldest freeze age",
-      value: "288M",
-      detail: "14.4% of wraparound",
-      trend: 2.9,
+      value: `${Math.round(Math.max(0, ...rows.map((row) => row.freezeAge)) / 1_000_000)}M`,
+      detail: "Transaction ID age",
+      trend: 0,
       tone: "violet" as const,
       points: [40, 42, 43, 46, 47, 49, 52, 54, 57, 59, 62, 65],
     },
     {
       label: "Bloat exposure",
-      value: "9.2 GB",
-      detail: "Estimated · 5 relations",
-      trend: 6.1,
+      value: String(rows.filter((row) => row.deadRatio >= 10).length),
+      detail: `High dead-ratio relations · ${rows.length} loaded`,
+      trend: 0,
       tone: "cyan" as const,
       points: [35, 38, 36, 40, 42, 46, 45, 51, 54, 57, 61, 64],
     },
@@ -53,13 +75,14 @@ export function MaintenancePage() {
         description="Understand vacuum urgency, statistics freshness, freeze exposure, and bloat risk without turning the dashboard into an unsafe operations console."
         actions={
           <>
-            <button className="button">
+            <DataSourceBadge source={source} />
+            <button className="button" onClick={() => window.location.reload()}>
               <RefreshCw />
-              Collect now
+              Refresh view
             </button>
-            <button className="button primary">
+            <button className="button primary" onClick={() => setTab("tables")}>
               <Gauge />
-              Run bounded check
+              Review highest risk
             </button>
           </>
         }
@@ -80,7 +103,7 @@ export function MaintenancePage() {
           className={`section-tab${tab === "progress" ? " active" : ""}`}
           onClick={() => setTab("progress")}
         >
-          Live progress <Badge tone="cyan">2</Badge>
+          Live progress <Badge tone="cyan">{progress.length}</Badge>
         </button>
       </div>
       {tab === "tables" ? (
@@ -149,18 +172,34 @@ export function MaintenancePage() {
             </table>
           </div>
           <div className="table-footer">
-            5 of 1,010 tables · sorted by maintenance risk
+            {rows.length} bounded table rows · sorted by maintenance risk
           </div>
         </section>
       ) : (
-        <ProgressView />
+        <ProgressView progress={progress} />
       )}
       <div className="content-grid">
         <Card>
           <CardHeader
             title="Recommended maintenance"
-            subtitle="audit.events"
-            action={<Badge tone="rose">High urgency</Badge>}
+            subtitle={
+              recommended
+                ? `${recommended.schema}.${recommended.table}`
+                : "No relation selected"
+            }
+            action={
+              <Badge
+                tone={
+                  recommended?.risk === "high"
+                    ? "rose"
+                    : recommended?.risk === "medium"
+                      ? "amber"
+                      : "green"
+                }
+              >
+                {recommended?.risk ?? "clear"}
+              </Badge>
+            }
           />
           <CardBody>
             <div style={{ display: "flex", gap: 11 }}>
@@ -176,20 +215,47 @@ export function MaintenancePage() {
               </span>
               <div>
                 <strong style={{ fontSize: 12 }}>
-                  Autovacuum is not keeping pace
+                  {recommended
+                    ? `${recommended.deadRows.toLocaleString()} dead tuples observed`
+                    : "No material maintenance pressure"}
                 </strong>
                 <p style={{ color: "var(--muted)", fontSize: 10 }}>
-                  2.4M dead tuples accumulated in 17 hours. The table’s mutation
-                  rate is 3.7× above the previous window.
+                  {recommended
+                    ? `${recommended.deadRatio}% dead ratio · vacuum ${recommended.lastVacuum} · analyze ${recommended.lastAnalyze}.`
+                    : "The bounded catalog inventory has no rows."}
                 </p>
               </div>
             </div>
             <div className="query-panel" style={{ marginTop: 12 }}>
-              <span className="token-keyword">VACUUM</span> (VERBOSE, ANALYZE){" "}
-              <span className="token-table">audit.events</span>;
+              <span className="token-keyword">VACUUM</span> (ANALYZE){" "}
+              <span className="token-table">
+                {recommended
+                  ? `${recommended.schema}.${recommended.table}`
+                  : "schema.table"}
+              </span>
+              ;
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 11 }}>
-              <button className="button">
+              <button
+                className="button"
+                disabled={!recommended}
+                onClick={() => {
+                  if (!recommended) return;
+                  void fetch("/api/maintenance/command", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({
+                      schema: recommended.schema,
+                      table: recommended.table,
+                      operation: "vacuum_analyze",
+                    }),
+                  }).then(async (response) => {
+                    const body = (await response.json()) as { sql?: string };
+                    if (body.sql)
+                      await navigator.clipboard?.writeText(body.sql);
+                  });
+                }}
+              >
                 <Copy />
                 Copy command
               </button>
@@ -200,18 +266,55 @@ export function MaintenancePage() {
         <Card>
           <CardHeader
             title="Exact bloat check"
-            action={<Badge tone="amber">Capability gated</Badge>}
+            action={
+              <Badge tone={pgstattupleAvailable ? "green" : "amber"}>
+                {pgstattupleAvailable ? "Available" : "Capability gated"}
+              </Badge>
+            }
           />
           <CardBody>
             <p style={{ marginTop: 0, color: "var(--muted)", fontSize: 11 }}>
-              The lightweight catalog estimate is available. An exact scan
-              requires <span className="mono">pgstattuple</span>, which is not
-              installed, and can be expensive on large relations.
+              The lightweight catalog estimate is always available. An exact
+              scan uses <span className="mono">pgstattuple</span>, can be
+              expensive, and requires explicit confirmation.
             </p>
-            <button className="button" disabled>
+            <button
+              className="button"
+              disabled={!pgstattupleAvailable || !recommended?.relationOid}
+              onClick={() => {
+                if (!recommended?.relationOid) return;
+                setBloatResult("Running bounded check…");
+                void fetch("/api/maintenance/bloat", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({
+                    relationOid: recommended.relationOid,
+                    acknowledgement: "RUN EXPENSIVE BLOAT CHECK",
+                  }),
+                }).then(async (response) => {
+                  const body = (await response.json()) as {
+                    result?: {
+                      deadTuplePercent?: number;
+                      freePercent?: number;
+                    };
+                    error?: { message?: string };
+                  };
+                  setBloatResult(
+                    body.result
+                      ? `${body.result.deadTuplePercent?.toFixed(2)}% dead · ${body.result.freePercent?.toFixed(2)}% free`
+                      : (body.error?.message ?? "Check failed"),
+                  );
+                });
+              }}
+            >
               <Play />
-              Exact check unavailable
+              {pgstattupleAvailable
+                ? "Run exact check"
+                : "Exact check unavailable"}
             </button>
+            {bloatResult ? (
+              <p className="card-subtitle">{bloatResult}</p>
+            ) : null}
           </CardBody>
         </Card>
       </div>
@@ -219,75 +322,65 @@ export function MaintenancePage() {
   );
 }
 
-function ProgressView() {
+function ProgressView({ progress }: { progress: ProgressOperation[] }) {
+  if (progress.length === 0) {
+    return (
+      <div className="empty-state">
+        <div>
+          <h2>No maintenance operations in progress</h2>
+          <p>
+            PostgreSQL reports no active vacuum or index-build progress rows.
+          </p>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="content-grid equal" style={{ marginTop: 0 }}>
-      <Card>
-        <CardHeader
-          title="VACUUM · audit.events"
-          action={<Badge tone="cyan">scanning heap</Badge>}
-        />
-        <CardBody>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              color: "var(--muted)",
-              fontSize: 10,
-              marginBottom: 8,
-            }}
-          >
-            <span>24,819 of 48,210 blocks</span>
-            <span className="number">51.5%</span>
-          </div>
-          <div className="progress-track">
-            <span style={{ width: "51.5%" }} />
-          </div>
-          <div className="info-grid" style={{ marginTop: 13 }}>
-            <div className="info-cell">
-              <span>Tuples removed</span>
-              <strong>1.18M</strong>
-            </div>
-            <div className="info-cell">
-              <span>Elapsed</span>
-              <strong>04:18</strong>
-            </div>
-          </div>
-        </CardBody>
-      </Card>
-      <Card>
-        <CardHeader
-          title="CREATE INDEX · orders"
-          action={<Badge tone="violet">building</Badge>}
-        />
-        <CardBody>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              color: "var(--muted)",
-              fontSize: 10,
-              marginBottom: 8,
-            }}
-          >
-            <span>index validation: scanning index</span>
-            <span className="number">84%</span>
-          </div>
-          <div className="progress-track">
-            <span style={{ width: "84%" }} />
-          </div>
-          <div className="info-grid" style={{ marginTop: 13 }}>
-            <div className="info-cell">
-              <span>Lockers done</span>
-              <strong>38 / 38</strong>
-            </div>
-            <div className="info-cell">
-              <span>Elapsed</span>
-              <strong>12:51</strong>
-            </div>
-          </div>
-        </CardBody>
-      </Card>
+      {progress.map((operation) => {
+        const percentage =
+          operation.total > 0
+            ? Math.min(100, (operation.completed / operation.total) * 100)
+            : 0;
+        return (
+          <Card key={`${operation.operation}:${operation.processId}`}>
+            <CardHeader
+              title={`${operation.operation.replace("_", " ").toUpperCase()} · PID ${operation.processId}`}
+              action={<Badge tone="cyan">{operation.phase}</Badge>}
+            />
+            <CardBody>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  color: "var(--muted)",
+                  fontSize: 10,
+                  marginBottom: 8,
+                }}
+              >
+                <span>
+                  {operation.completed.toLocaleString()} of{" "}
+                  {operation.total.toLocaleString()} units
+                </span>
+                <span className="number">{percentage.toFixed(1)}%</span>
+              </div>
+              <div className="progress-track">
+                <span style={{ width: `${percentage}%` }} />
+              </div>
+              <div className="info-grid" style={{ marginTop: 13 }}>
+                <div className="info-cell">
+                  <span>Relation OID</span>
+                  <strong>{operation.relationOid}</strong>
+                </div>
+                <div className="info-cell">
+                  <span>Phase</span>
+                  <strong>{operation.phase}</strong>
+                </div>
+              </div>
+            </CardBody>
+          </Card>
+        );
+      })}
     </div>
   );
 }

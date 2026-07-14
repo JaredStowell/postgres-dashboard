@@ -35,7 +35,8 @@ function booleanEnv(env: RuntimeEnv, key: string): boolean {
   return optionalString(env, key)?.toLowerCase() === "true";
 }
 
-function modelFor(env: RuntimeEnv, mode: AiAnalysisMode): string {
+export function getAiModel(env: RuntimeEnv, mode: AiAnalysisMode): string {
+  if (booleanEnv(env, "AI_MOCK_MODE")) return "deterministic-mock";
   return mode === "deep"
     ? (optionalString(env, "OPENAI_DEEP_MODEL") ?? "gpt-5.6-sol")
     : (optionalString(env, "OPENAI_BALANCED_MODEL") ?? "gpt-5.6-terra");
@@ -45,7 +46,7 @@ export async function analyzeAiPayload(
   payload: AiAdvisorPayload,
   options: AnalyzePayloadOptions,
 ): Promise<AiAnalysisResult> {
-  const model = modelFor(options.env, options.mode);
+  const model = getAiModel(options.env, options.mode);
   if (booleanEnv(options.env, "AI_MOCK_MODE")) {
     return {
       analysis: createMockAiAnalysis(payload),

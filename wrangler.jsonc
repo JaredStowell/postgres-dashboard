@@ -9,21 +9,18 @@
     {
       "binding": "CONTROL_DB",
       "id": "REPLACE_WITH_CONTROL_HYPERDRIVE_ID",
-      "localConnectionString": "postgres://index_analyzer:index_analyzer@127.0.0.1:55433/index_analyzer"
+      "localConnectionString": "postgres://index_analyzer:index_analyzer@127.0.0.1:55433/index_analyzer",
     },
     {
       "binding": "TARGET_LOCAL",
       "id": "REPLACE_WITH_TARGET_HYPERDRIVE_ID",
-      "localConnectionString": "postgres://index_analyzer:index_analyzer@127.0.0.1:55433/index_analyzer"
-    }
+      "localConnectionString": "postgres://index_analyzer:index_analyzer@127.0.0.1:55433/index_analyzer",
+    },
   ],
   "vars": {
     "INDEX_ANALYZER_TARGETS": "local:Local PostgreSQL:TARGET_LOCAL",
     "OPENAI_BALANCED_MODEL": "gpt-5.6-terra",
     "OPENAI_DEEP_MODEL": "gpt-5.6-sol",
-    "AI_MOCK_MODE": "false"
+    "AI_MOCK_MODE": "false",
   },
-  "triggers": {
-    "crons": ["*/5 * * * *"]
-  }
 }

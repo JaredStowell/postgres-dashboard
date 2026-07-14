@@ -3,53 +3,131 @@
 import { useEffect, useState } from "react";
 import { Copy, Pause, Play, RefreshCw } from "lucide-react";
 import { demoRepository } from "@/lib/demo/data";
+import type { Session } from "@/lib/demo/types";
+import type { DataSourceState } from "@/lib/server/dashboard-data";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { MetricCard } from "@/components/ui/metric-card";
 import { PageHeader } from "@/components/ui/page-header";
+import { DataSourceBadge } from "@/components/ui/data-source-badge";
 
-export function LivePage() {
+export function LivePage({
+  initialSessions = demoRepository.sessions(),
+  source = {
+    mode: "unavailable",
+    label: "Sample preview",
+    detail: "No database data was supplied.",
+  },
+}: {
+  initialSessions?: Session[];
+  source?: DataSourceState;
+}) {
   const [paused, setPaused] = useState(false);
   const [seconds, setSeconds] = useState(0);
+  const [sessions, setSessions] = useState(initialSessions);
   useEffect(() => {
     if (paused) return;
-    const interval = window.setInterval(
-      () => setSeconds((value) => (value + 1) % 5),
-      1000,
-    );
+    const interval = window.setInterval(() => {
+      setSeconds((value) => {
+        const next = (value + 1) % 5;
+        if (next === 0 && source.mode === "live") {
+          void fetch("/api/activity?limit=250", { cache: "no-store" })
+            .then(
+              async (response) =>
+                (await response.json()) as {
+                  sessions?: Array<Record<string, unknown>>;
+                },
+            )
+            .then((body) => {
+              if (!body.sessions) return;
+              setSessions(
+                body.sessions.map((row) => ({
+                  pid: Number(row.processId),
+                  database: initialSessions[0]?.database ?? "configured target",
+                  user: String(row.userName ?? "system"),
+                  application: String(
+                    row.applicationName ?? row.backendType ?? "postgres",
+                  ),
+                  client: String(row.clientAddress ?? "local"),
+                  state:
+                    row.state === "active" ||
+                    row.state === "idle in transaction"
+                      ? row.state
+                      : "idle",
+                  wait: row.waitEvent
+                    ? `${String(row.waitEventType ?? "Wait")} · ${String(row.waitEvent)}`
+                    : "—",
+                  duration: `${Math.floor(
+                    Math.max(
+                      Number(row.transactionAgeSeconds ?? 0),
+                      Number(row.queryAgeSeconds ?? 0),
+                    ) / 60,
+                  )
+                    .toString()
+                    .padStart(2, "0")}:${Math.round(
+                    Math.max(
+                      Number(row.transactionAgeSeconds ?? 0),
+                      Number(row.queryAgeSeconds ?? 0),
+                    ) % 60,
+                  )
+                    .toString()
+                    .padStart(2, "0")}`,
+                  query: String(row.queryPreview ?? ""),
+                  blockedBy: Array.isArray(row.blockingProcessIds)
+                    ? Number(row.blockingProcessIds[0]) || undefined
+                    : undefined,
+                })),
+              );
+            })
+            .catch(() => undefined);
+        }
+        return next;
+      });
+    }, 1000);
     return () => window.clearInterval(interval);
-  }, [paused]);
-  const sessions = demoRepository.sessions();
+  }, [initialSessions, paused, source.mode]);
+  const active = sessions.filter((session) => session.state === "active");
+  const waiting = sessions.filter((session) => session.wait !== "—");
+  const blocked = sessions.filter((session) => session.blockedBy !== undefined);
+  const blockedSession = blocked[0];
+  const blockerSession = blockedSession
+    ? sessions.find((session) => session.pid === blockedSession.blockedBy)
+    : undefined;
+  const oldest = [...sessions].sort((left, right) =>
+    right.duration.localeCompare(left.duration),
+  )[0];
   const metrics = [
     {
       label: "Active",
-      value: "34",
-      detail: "of 120 connections",
-      trend: 8.1,
+      value: String(active.length),
+      detail: `of ${sessions.length} visible sessions`,
+      trend: 0,
       tone: "cyan" as const,
       points: [24, 26, 25, 28, 31, 29, 33, 35, 32, 36, 34, 35],
     },
     {
       label: "Waiting",
-      value: "4",
-      detail: "2 lock · 2 I/O",
-      trend: 33.3,
+      value: String(waiting.length),
+      detail: `${waiting.filter((session) => session.wait.startsWith("Lock")).length} lock · ${waiting.filter((session) => session.wait.startsWith("IO")).length} I/O`,
+      trend: 0,
       tone: "amber" as const,
       points: [10, 10, 14, 14, 18, 20, 24, 28, 32, 38, 44, 50],
     },
     {
       label: "Blocked",
-      value: "2",
-      detail: "Oldest 3m 42s",
-      trend: 100,
+      value: String(blocked.length),
+      detail: blockedSession
+        ? `Oldest ${blockedSession.duration}`
+        : "No blocking edges",
+      trend: 0,
       tone: "rose" as const,
       points: [0, 0, 0, 0, 0, 0, 10, 10, 10, 40, 50, 60],
     },
     {
       label: "Oldest transaction",
-      value: "8m 17s",
-      detail: "idle in transaction",
-      trend: 4.8,
+      value: oldest?.duration ?? "00:00",
+      detail: oldest?.state ?? "No sessions",
+      trend: 0,
       tone: "violet" as const,
       points: [35, 38, 41, 44, 47, 50, 53, 56, 59, 62, 65, 68],
     },
@@ -62,6 +140,7 @@ export function LivePage() {
         description="See sessions, waits, long transactions, and blocking relationships. This view is intentionally observation-only."
         actions={
           <>
+            <DataSourceBadge source={source} />
             <span className="button" style={{ cursor: "default" }}>
               <span className="live-pulse" />
               {paused ? "Paused" : `Refresh in ${5 - seconds}s`}
@@ -85,27 +164,49 @@ export function LivePage() {
         <Card>
           <CardHeader
             title="Blocking graph"
-            subtitle="1 chain · 2 sessions"
-            action={<Badge tone="rose">Active incident</Badge>}
+            subtitle={`${blocked.length} edge${blocked.length === 1 ? "" : "s"} · ${sessions.length} sessions`}
+            action={
+              <Badge tone={blocked.length > 0 ? "rose" : "green"}>
+                {blocked.length > 0 ? "Active incident" : "Clear"}
+              </Badge>
+            }
           />
-          <div
-            className="blocking-graph"
-            aria-label="PID 20391 is blocking PID 20418"
-          >
-            <span className="block-line" />
-            <div className="session-node blocker">
-              <Badge tone="amber">Blocker</Badge>
-              <strong style={{ marginTop: 8 }}>PID 20391</strong>
-              <span>app_writer · 08:17</span>
-              <span>idle in transaction</span>
+          {blockedSession ? (
+            <div
+              className="blocking-graph"
+              aria-label={`PID ${blockedSession.blockedBy} is blocking PID ${blockedSession.pid}`}
+            >
+              <span className="block-line" />
+              <div className="session-node blocker">
+                <Badge tone="amber">Blocker</Badge>
+                <strong style={{ marginTop: 8 }}>
+                  PID {blockedSession.blockedBy}
+                </strong>
+                <span>
+                  {blockerSession?.user ?? "not visible"} ·{" "}
+                  {blockerSession?.duration ?? "unknown"}
+                </span>
+                <span>{blockerSession?.state ?? "outside current result"}</span>
+              </div>
+              <div className="session-node blocked">
+                <Badge tone="rose">Blocked</Badge>
+                <strong style={{ marginTop: 8 }}>
+                  PID {blockedSession.pid}
+                </strong>
+                <span>
+                  {blockedSession.user} · {blockedSession.duration}
+                </span>
+                <span>{blockedSession.wait}</span>
+              </div>
             </div>
-            <div className="session-node blocked">
-              <Badge tone="rose">Blocked</Badge>
-              <strong style={{ marginTop: 8 }}>PID 20418</strong>
-              <span>reporting · 03:42</span>
-              <span>transactionid lock</span>
+          ) : (
+            <div className="empty-state">
+              <div>
+                <h2>No blocking chain</h2>
+                <p>pg_blocking_pids() reports no current blockers.</p>
+              </div>
             </div>
-          </div>
+          )}
         </Card>
         <Card>
           <CardHeader
@@ -117,15 +218,20 @@ export function LivePage() {
               <div className="analysis-card severity-critical">
                 <div className="analysis-head">
                   <span className="severity-mark" />
-                  <strong>Checkout transaction is holding the lock</strong>
+                  <strong>
+                    {blockedSession
+                      ? `PID ${blockedSession.blockedBy} is holding a lock`
+                      : "No lock incident is active"}
+                  </strong>
                 </div>
                 <p className="analysis-summary">
-                  PID 20391 has been idle in a transaction for 8m 17s after
-                  updating orders. It blocks reporting PID 20418.
+                  {blockedSession
+                    ? `The visible evidence shows PID ${blockedSession.pid} waiting on PID ${blockedSession.blockedBy}. Inspect application ownership and transaction state before acting.`
+                    : "The current bounded activity snapshot contains no blocking edge."}
                 </p>
                 <div className="analysis-meta">
-                  <span>transaction age 08:17</span>
-                  <span>client 10.0.2.14</span>
+                  <span>blocked age {blockedSession?.duration ?? "—"}</span>
+                  <span>client {blockerSession?.client ?? "—"}</span>
                 </div>
               </div>
               <div className="privacy-note">
@@ -133,7 +239,15 @@ export function LivePage() {
                 No cancel or terminate controls are exposed. Validate
                 application ownership before acting outside this tool.
               </div>
-              <button className="button" style={{ marginTop: 10 }}>
+              <button
+                className="button"
+                style={{ marginTop: 10 }}
+                onClick={() =>
+                  void navigator.clipboard?.writeText(
+                    "SELECT pid, usename, state, wait_event_type, wait_event, pg_blocking_pids(pid) AS blocked_by, query FROM pg_stat_activity WHERE datid = (SELECT oid FROM pg_database WHERE datname = current_database());",
+                  )
+                }
+              >
                 <Copy />
                 Copy diagnostic SQL
               </button>
@@ -218,7 +332,7 @@ export function LivePage() {
           </table>
         </div>
         <div className="table-footer">
-          5 shown · 120 total connections · sampled just now
+          {sessions.length} bounded sessions · sampled just now
         </div>
       </section>
     </div>

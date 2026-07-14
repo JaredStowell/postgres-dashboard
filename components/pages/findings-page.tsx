@@ -1,25 +1,34 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import {
-  CheckCircle2,
-  Download,
-  Filter,
-  Search,
-  Settings2,
-} from "lucide-react";
+import { CheckCircle2, Download, Filter, Search } from "lucide-react";
 import { demoRepository } from "@/lib/demo/data";
-import type { Severity } from "@/lib/demo/types";
+import type { Finding, Severity } from "@/lib/demo/types";
+import type { DataSourceState } from "@/lib/server/dashboard-data";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { FindingsList } from "@/components/ui/findings-list";
 import { MetricCard } from "@/components/ui/metric-card";
 import { PageHeader } from "@/components/ui/page-header";
+import { DataSourceBadge } from "@/components/ui/data-source-badge";
 
-export function FindingsPage() {
+export function FindingsPage({
+  findings: initialFindings = demoRepository.findings(),
+  source = {
+    mode: "unavailable",
+    label: "Sample preview",
+    detail: "No database data was supplied.",
+  },
+}: {
+  findings?: Finding[];
+  source?: DataSourceState;
+}) {
   const [search, setSearch] = useState("");
   const [severity, setSeverity] = useState<Severity | "all">("all");
-  const findings = demoRepository.findings();
+  const [activeOnly, setActiveOnly] = useState(true);
+  const [findings, setFindings] = useState(initialFindings);
+  const [note, setNote] = useState("");
+  const [actionStatus, setActionStatus] = useState<string | null>(null);
   const filtered = useMemo(
     () =>
       findings.filter(
@@ -27,44 +36,110 @@ export function FindingsPage() {
           `${finding.title} ${finding.description} ${finding.evidence}`
             .toLowerCase()
             .includes(search.toLowerCase()) &&
-          (severity === "all" || finding.severity === severity),
+          (severity === "all" || finding.severity === severity) &&
+          (!activeOnly ||
+            finding.status === "open" ||
+            finding.status === "acknowledged"),
       ),
-    [findings, search, severity],
+    [activeOnly, findings, search, severity],
+  );
+  const selected = filtered[0];
+  const active = findings.filter(
+    (finding) => finding.status === "open" || finding.status === "acknowledged",
   );
   const metrics = [
     {
       label: "Open findings",
-      value: "7",
-      detail: "2 critical · 3 warning",
-      trend: -12.5,
+      value: String(active.length),
+      detail: `${active.filter((finding) => finding.severity === "critical").length} critical · ${active.filter((finding) => finding.severity === "warning").length} warning`,
+      trend: 0,
       tone: "rose" as const,
       points: [72, 70, 68, 64, 66, 61, 58, 56, 52, 49, 46, 43],
     },
     {
       label: "New today",
-      value: "3",
-      detail: "Across 2 databases",
-      trend: 50,
+      value: String(
+        findings.filter(
+          (finding) =>
+            finding.firstSeen.includes("h") ||
+            finding.firstSeen.includes("m") ||
+            finding.firstSeen === "just now",
+        ).length,
+      ),
+      detail: "Observed in the last day",
+      trend: 0,
       tone: "amber" as const,
       points: [10, 10, 10, 18, 18, 25, 25, 33, 40, 48, 55, 62],
     },
     {
       label: "Resolved · 7d",
-      value: "24",
-      detail: "Median time 5h 14m",
-      trend: 20,
+      value: String(
+        findings.filter((finding) => finding.status === "resolved").length,
+      ),
+      detail: "In the loaded history",
+      trend: 0,
       tone: "green" as const,
       points: [20, 24, 29, 32, 38, 41, 47, 51, 55, 60, 66, 72],
     },
     {
       label: "Rules enabled",
-      value: "11",
-      detail: "1 currently muted",
+      value: "9",
+      detail: "Seeded detection contracts",
       trend: 0,
       tone: "violet" as const,
       points: [50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50],
     },
   ];
+  const updateStatus = async (finding: Finding, status: Finding["status"]) => {
+    setActionStatus("Saving…");
+    try {
+      const response = await fetch("/api/findings", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          findingId: Number(finding.id),
+          status,
+          note: note || undefined,
+        }),
+      });
+      if (!response.ok) {
+        const body = (await response.json()) as {
+          error?: { message?: string };
+        };
+        throw new Error(body.error?.message ?? "Finding update failed");
+      }
+      if (note.trim()) {
+        await fetch("/api/findings/annotations", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ findingId: Number(finding.id), body: note }),
+        });
+      }
+      setFindings((current) =>
+        current.map((item) =>
+          item.id === finding.id ? { ...item, status } : item,
+        ),
+      );
+      setNote("");
+      setActionStatus("Saved");
+    } catch (error) {
+      setActionStatus(
+        error instanceof Error ? error.message : "Finding update failed",
+      );
+    }
+  };
+  const downloadFindings = () => {
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(findings, null, 2)], {
+        type: "application/json",
+      }),
+    );
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "index-analyzer-findings.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
   return (
     <div className="page">
       <PageHeader
@@ -73,14 +148,14 @@ export function FindingsPage() {
         description="A durable, deduplicated queue of workload regressions, plan changes, maintenance risks, index signals, and live incidents."
         actions={
           <>
-            <button className="button">
+            <DataSourceBadge source={source} />
+            <button className="button" onClick={downloadFindings}>
               <Download />
               Export
             </button>
-            <button className="button primary">
-              <Settings2 />
-              Manage rules
-            </button>
+            <span className="button" style={{ cursor: "default" }}>
+              <Badge tone="violet">9 rules enabled</Badge>
+            </span>
           </>
         }
       />
@@ -100,9 +175,13 @@ export function FindingsPage() {
             onChange={(event) => setSearch(event.target.value)}
           />
         </label>
-        <button className="filter-button">
+        <button
+          className={`filter-button${activeOnly ? " active" : ""}`}
+          aria-pressed={activeOnly}
+          onClick={() => setActiveOnly((value) => !value)}
+        >
           <Filter />
-          Status: active
+          Status: {activeOnly ? "active" : "all"}
         </button>
         <select
           className="context-select compact"
@@ -128,52 +207,87 @@ export function FindingsPage() {
           <FindingsList findings={filtered} detailed />
         </Card>
         <div style={{ display: "grid", gap: 12, alignContent: "start" }}>
-          <Card>
-            <CardHeader
-              title="Selected finding"
-              action={<Badge tone="rose">Critical</Badge>}
-            />
-            <CardBody>
-              <h3 style={{ margin: 0, fontSize: 13 }}>
-                Checkout lookup regressed 63%
-              </h3>
-              <p style={{ color: "var(--muted)", fontSize: 10 }}>
-                Mean execution time moved from 84 ms to 137 ms while calls
-                remained above the minimum guard.
-              </p>
-              <div className="info-grid">
-                <div className="info-cell">
-                  <span>First seen</span>
-                  <strong>2h ago</strong>
-                </div>
-                <div className="info-cell">
-                  <span>Occurrences</span>
-                  <strong>7</strong>
-                </div>
-                <div className="info-cell">
-                  <span>Baseline</span>
-                  <strong>84.1ms</strong>
-                </div>
-                <div className="info-cell">
-                  <span>Current</span>
-                  <strong>137.0ms</strong>
-                </div>
-              </div>
-              <textarea
-                className="textarea"
-                rows={3}
-                placeholder="Add an operator note…"
-                style={{ marginTop: 12, padding: 10, resize: "vertical" }}
+          {selected ? (
+            <Card>
+              <CardHeader
+                title="Selected finding"
+                action={
+                  <Badge
+                    tone={
+                      selected.severity === "critical"
+                        ? "rose"
+                        : selected.severity === "warning"
+                          ? "amber"
+                          : "cyan"
+                    }
+                  >
+                    {selected.severity}
+                  </Badge>
+                }
               />
-              <div style={{ display: "flex", gap: 8, marginTop: 9 }}>
-                <button className="button">
-                  <CheckCircle2 />
-                  Acknowledge
-                </button>
-                <button className="button">Dismiss</button>
-              </div>
-            </CardBody>
-          </Card>
+              <CardBody>
+                <h3 style={{ margin: 0, fontSize: 13 }}>{selected.title}</h3>
+                <p style={{ color: "var(--muted)", fontSize: 10 }}>
+                  {selected.description}
+                </p>
+                <div className="info-grid">
+                  <div className="info-cell">
+                    <span>First seen</span>
+                    <strong>{selected.firstSeen}</strong>
+                  </div>
+                  <div className="info-cell">
+                    <span>Occurrences</span>
+                    <strong>{selected.occurrences}</strong>
+                  </div>
+                  <div className="info-cell">
+                    <span>Status</span>
+                    <strong>{selected.status}</strong>
+                  </div>
+                  <div className="info-cell">
+                    <span>Last seen</span>
+                    <strong>{selected.lastSeen}</strong>
+                  </div>
+                </div>
+                <textarea
+                  className="textarea"
+                  rows={3}
+                  placeholder="Add an operator note…"
+                  value={note}
+                  onChange={(event) => setNote(event.target.value)}
+                  style={{ marginTop: 12, padding: 10, resize: "vertical" }}
+                />
+                <div style={{ display: "flex", gap: 8, marginTop: 9 }}>
+                  <button
+                    className="button"
+                    onClick={() => void updateStatus(selected, "acknowledged")}
+                  >
+                    <CheckCircle2 />
+                    Acknowledge
+                  </button>
+                  <button
+                    className="button"
+                    onClick={() => void updateStatus(selected, "dismissed")}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+                {actionStatus ? (
+                  <p className="card-subtitle">{actionStatus}</p>
+                ) : null}
+              </CardBody>
+            </Card>
+          ) : (
+            <Card>
+              <CardBody>
+                <div className="empty-state">
+                  <div>
+                    <h2>No matching findings</h2>
+                    <p>Run the collector or adjust the current filters.</p>
+                  </div>
+                </div>
+              </CardBody>
+            </Card>
+          )}
           <Card>
             <CardHeader title="Deduplication evidence" />
             <CardBody>
@@ -185,7 +299,9 @@ export function FindingsPage() {
                   overflowWrap: "anywhere",
                 }}
               >
-                sha256:query_regression:commerce_prod:8839172:mean_exec_time
+                {selected
+                  ? `finding:${selected.id} · ${selected.source} · ${selected.database}`
+                  : "No fingerprint selected"}
               </p>
               <p
                 style={{ color: "var(--muted)", fontSize: 10, marginBottom: 0 }}

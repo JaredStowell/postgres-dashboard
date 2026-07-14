@@ -132,16 +132,15 @@ export function QueryTable({ queries }: { queries: QueryStat[] }) {
         </div>
         <footer className="table-footer">
           <span>
-            {filtered.length.toLocaleString()} of 18,421 normalized queries
+            {filtered.length.toLocaleString()} of{" "}
+            {queries.length.toLocaleString()} loaded queries · API limit 250
           </span>
           <nav className="pagination" aria-label="Query pages">
-            <button className="page-button" aria-label="Previous page">
+            <button className="page-button" aria-label="Previous page" disabled>
               <ChevronLeft size={13} />
             </button>
             <button className="page-button active">1</button>
-            <button className="page-button">2</button>
-            <button className="page-button">3</button>
-            <button className="page-button" aria-label="Next page">
+            <button className="page-button" aria-label="Next page" disabled>
               <ChevronRight size={13} />
             </button>
           </nav>

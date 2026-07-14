@@ -23,6 +23,7 @@ describe("snapshot collector and control plane", () => {
     expect(summary.queries).toBeGreaterThan(0);
     expect(summary.tables).toBeGreaterThanOrEqual(4);
     expect(summary.indexes).toBeGreaterThanOrEqual(6);
+    expect(summary.findings).toBeGreaterThan(0);
     const run = await database.pool.query<Record<string, unknown>>(
       "SELECT * FROM index_analyzer.collection_runs WHERE id = $1",
       [summary.runId],
@@ -44,6 +45,10 @@ describe("snapshot collector and control plane", () => {
     expect(Number(snapshotCounts.rows[0]?.queries)).toBe(summary.queries);
     expect(Number(snapshotCounts.rows[0]?.tables)).toBe(summary.tables);
     expect(Number(snapshotCounts.rows[0]?.indexes)).toBe(summary.indexes);
+    const generatedFindings = await database.pool.query<{ count: string }>(
+      "SELECT count(*) FROM index_analyzer.findings",
+    );
+    expect(Number(generatedFindings.rows[0]?.count)).toBeGreaterThan(0);
   });
 
   it("creates history and deduplicates findings by stable fingerprint", async () => {

@@ -1,27 +1,68 @@
 import { ArrowRight, RefreshCw } from "lucide-react";
 import { demoRepository } from "@/lib/demo/data";
+import type {
+  FleetPageData,
+  DataSourceState,
+} from "@/lib/server/dashboard-data";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
 import { FindingsList } from "@/components/ui/findings-list";
 import { MetricCard } from "@/components/ui/metric-card";
 import { PageHeader } from "@/components/ui/page-header";
+import { DataSourceBadge } from "@/components/ui/data-source-badge";
 
-export function FleetPage() {
-  const metrics = demoRepository.metrics();
-  const findings = demoRepository.findings();
-  const capabilities = demoRepository.capabilities();
+export function FleetPage({ data }: { data?: FleetPageData }) {
+  const metrics = data?.metrics ?? demoRepository.metrics();
+  const findings = data?.findings ?? demoRepository.findings();
+  const capabilities = data?.capabilities ?? demoRepository.capabilities();
+  const source: DataSourceState = data?.source ?? {
+    mode: "unavailable",
+    label: "Sample preview",
+    detail: "No database data was supplied.",
+  };
+  const critical = findings.filter(
+    (finding) =>
+      finding.severity === "critical" && finding.status !== "resolved",
+  ).length;
+  const warning = findings.filter(
+    (finding) =>
+      finding.severity === "warning" && finding.status !== "resolved",
+  ).length;
+  const healthScore = Math.max(0, 100 - critical * 18 - warning * 7);
+  const coverage = data?.coverage ?? {
+    databases: 0,
+    schemas: 0,
+    queries: 0,
+    tables: 0,
+  };
+  const categoryScore = (category: string) =>
+    Math.max(
+      0,
+      100 -
+        findings.filter(
+          (finding) =>
+            finding.source.toLowerCase().includes(category) &&
+            finding.status !== "resolved",
+        ).length *
+          15,
+    );
   return (
     <div className="page">
       <PageHeader
         eyebrow="Fleet overview"
-        title="Good morning. Your database needs attention."
-        description="A live, reset-aware view across every configured database and schema. Two high-impact issues account for most of today’s risk."
+        title={
+          critical + warning > 0
+            ? "Your database needs attention."
+            : "Your database looks clear."
+        }
+        description={`A reset-aware view of the selected database and every discovered schema. ${critical} critical and ${warning} warning findings are currently loaded.`}
         actions={
           <>
-            <button className="button">
+            <DataSourceBadge source={source} />
+            <a className="button" href="/">
               <RefreshCw />
-              Collect now
-            </button>
+              Refresh view
+            </a>
             <a className="button primary" href="/findings">
               Review findings <ArrowRight />
             </a>
@@ -37,30 +78,41 @@ export function FleetPage() {
         <Card>
           <CardHeader
             title="Fleet health"
-            subtitle="Last 24 hours"
-            action={<Badge tone="amber">Needs attention</Badge>}
+            subtitle="Current bounded sample"
+            action={
+              <Badge tone={healthScore >= 90 ? "green" : "amber"}>
+                {healthScore >= 90 ? "Healthy" : "Needs attention"}
+              </Badge>
+            }
           />
           <CardBody>
             <div className="health-hero">
               <div className="score-ring">
                 <div className="score-value">
-                  <strong>78</strong>
+                  <strong>{healthScore}</strong>
                   <span>health score</span>
                 </div>
               </div>
               <div className="health-summary">
-                <h3>Healthy foundation, concentrated workload risk</h3>
+                <h3>
+                  {healthScore >= 90
+                    ? "No material risk is currently detected"
+                    : "Measured findings are reducing the health score"}
+                </h3>
                 <p>
-                  Connections and replication are stable. Query regression and
-                  maintenance pressure on the events table are holding back the
-                  fleet score.
+                  This score is a transparent summary of the durable finding
+                  queue, not a substitute for reviewing the underlying evidence.
                 </p>
                 <div className="health-bars">
                   {[
-                    ["Queries", 68, "var(--rose)"],
-                    ["Indexes", 82, "var(--cyan)"],
-                    ["Maintenance", 71, "var(--amber)"],
-                    ["Connections", 96, "var(--green)"],
+                    ["Queries", categoryScore("query"), "var(--rose)"],
+                    ["Indexes", categoryScore("index"), "var(--cyan)"],
+                    [
+                      "Maintenance",
+                      categoryScore("maintenance"),
+                      "var(--amber)",
+                    ],
+                    ["Connections", categoryScore("activity"), "var(--green)"],
                   ].map(([label, value, color]) => (
                     <div className="health-bar-row" key={String(label)}>
                       <span>{label}</span>
@@ -79,7 +131,7 @@ export function FleetPage() {
           </CardBody>
         </Card>
         <Card>
-          <CardHeader title="Capability matrix" subtitle="commerce_prod" />
+          <CardHeader title="Capability matrix" subtitle={source.detail} />
           <ul className="capability-list">
             {capabilities.map((capability) => {
               const available = capability.status === "Available";
@@ -104,7 +156,7 @@ export function FleetPage() {
         <Card>
           <CardHeader
             title="Priority findings"
-            subtitle="7 open · ordered by impact"
+            subtitle={`${findings.filter((finding) => finding.status === "open").length} open · ordered by impact`}
             action={
               <a className="badge cyan" href="/findings">
                 View all <ArrowRight size={11} />
@@ -119,19 +171,19 @@ export function FleetPage() {
             <div className="info-grid">
               <div className="info-cell">
                 <span>Databases</span>
-                <strong>3 / 3</strong>
+                <strong>{coverage.databases}</strong>
               </div>
               <div className="info-cell">
                 <span>Schemas</span>
-                <strong>12</strong>
+                <strong>{coverage.schemas}</strong>
               </div>
               <div className="info-cell">
                 <span>Queries</span>
-                <strong>18,421</strong>
+                <strong>{coverage.queries}</strong>
               </div>
               <div className="info-cell">
                 <span>Relations</span>
-                <strong>1,294</strong>
+                <strong>{coverage.tables}</strong>
               </div>
             </div>
             <div style={{ marginTop: 15 }}>
@@ -144,11 +196,13 @@ export function FleetPage() {
                   fontSize: 10,
                 }}
               >
-                <span>Snapshot retention</span>
-                <span className="number">82 / 90 days</span>
+                <span>Collection source</span>
+                <span className="number">{source.label}</span>
               </div>
               <div className="progress-track">
-                <span style={{ width: "91%" }} />
+                <span
+                  style={{ width: source.mode === "live" ? "100%" : "20%" }}
+                />
               </div>
             </div>
           </CardBody>

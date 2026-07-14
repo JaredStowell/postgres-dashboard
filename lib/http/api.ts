@@ -5,7 +5,12 @@ export class ApiError extends Error {
   readonly code: string;
   readonly details?: unknown;
 
-  constructor(status: number, code: string, message: string, details?: unknown) {
+  constructor(
+    status: number,
+    code: string,
+    message: string,
+    details?: unknown,
+  ) {
     super(message);
     this.name = "ApiError";
     this.status = status;
@@ -56,24 +61,59 @@ export function errorResponse(error: unknown): Response {
     );
   }
 
-  const message = error instanceof Error ? error.message : "Unexpected server error";
+  const message =
+    error instanceof Error ? error.message : "Unexpected server error";
   return jsonResponse<ApiErrorBody>(
     { error: { code: "internal_error", message } },
     { status: 500 },
   );
 }
 
-export async function parseJson<T>(request: Request, schema: ZodType<T>): Promise<T> {
+export async function parseJson<T>(
+  request: Request,
+  schema: ZodType<T>,
+  options: { maxBytes?: number } = {},
+): Promise<T> {
   const contentType = request.headers.get("content-type") ?? "";
   if (!contentType.toLowerCase().includes("application/json")) {
-    throw new ApiError(415, "unsupported_media_type", "Expected an application/json request.");
+    throw new ApiError(
+      415,
+      "unsupported_media_type",
+      "Expected an application/json request.",
+    );
+  }
+
+  const maxBytes = Math.min(
+    Math.max(options.maxBytes ?? 1_048_576, 1_024),
+    2_097_152,
+  );
+  const declaredLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new ApiError(
+      413,
+      "payload_too_large",
+      `The request body exceeds ${maxBytes} bytes.`,
+    );
   }
 
   let input: unknown;
   try {
-    input = await request.json();
-  } catch {
-    throw new ApiError(400, "invalid_json", "The request body is not valid JSON.");
+    const body = await request.text();
+    if (new TextEncoder().encode(body).byteLength > maxBytes) {
+      throw new ApiError(
+        413,
+        "payload_too_large",
+        `The request body exceeds ${maxBytes} bytes.`,
+      );
+    }
+    input = JSON.parse(body);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(
+      400,
+      "invalid_json",
+      "The request body is not valid JSON.",
+    );
   }
   return schema.parse(input);
 }
@@ -85,7 +125,11 @@ export function boundedInteger(
 ): number {
   if (value === null || value === "") return fallback;
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < options.min || parsed > options.max) {
+  if (
+    !Number.isSafeInteger(parsed) ||
+    parsed < options.min ||
+    parsed > options.max
+  ) {
     throw new ApiError(
       400,
       "invalid_parameter",
@@ -106,4 +150,3 @@ export function route<TArgs extends unknown[]>(
     }
   };
 }
-

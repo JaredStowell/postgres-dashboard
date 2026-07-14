@@ -10,10 +10,10 @@ interface CloudflareBindings {
   OPENAI_BALANCED_MODEL?: string;
   OPENAI_DEEP_MODEL?: string;
   AI_MOCK_MODE?: string;
+  EXPLAIN_CONFIRMATION_SECRET?: string;
   [key: string]: unknown;
 }
 
 declare module "cloudflare:workers" {
   export const env: CloudflareBindings;
 }
-

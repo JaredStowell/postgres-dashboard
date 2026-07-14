@@ -11,7 +11,9 @@ describe("QueryTable", () => {
   it("filters normalized SQL across query metadata", async () => {
     const user = userEvent.setup();
     render(createElement(QueryTable, { queries }));
-    expect(screen.getByText(/18,421 normalized queries/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/5 loaded queries · API limit 250/i),
+    ).toBeInTheDocument();
 
     await user.type(
       screen.getByRole("textbox", { name: /search queries/i }),

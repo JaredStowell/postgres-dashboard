@@ -1,40 +1,68 @@
 import { Download, FlaskConical } from "lucide-react";
 import { demoRepository } from "@/lib/demo/data";
+import type { QueryStat } from "@/lib/demo/types";
+import type { DataSourceState } from "@/lib/server/dashboard-data";
 import { QueryTable } from "@/components/queries/query-table";
 import { MetricCard } from "@/components/ui/metric-card";
 import { PageHeader } from "@/components/ui/page-header";
+import { DataSourceBadge } from "@/components/ui/data-source-badge";
 
-export function QueriesPage() {
+export function QueriesPage({
+  queries = demoRepository.queries(),
+  source = {
+    mode: "unavailable",
+    label: "Sample preview",
+    detail: "No database data was supplied.",
+  },
+}: {
+  queries?: QueryStat[];
+  source?: DataSourceState;
+}) {
+  const totalExecution = queries.reduce(
+    (total, query) => total + query.totalTime,
+    0,
+  );
+  const totalCalls = queries.reduce((total, query) => total + query.calls, 0);
+  const weightedLatency = totalCalls > 0 ? totalExecution / totalCalls : 0;
+  const weightedCacheHit =
+    totalCalls > 0
+      ? queries.reduce(
+          (total, query) => total + query.cacheHit * query.calls,
+          0,
+        ) / totalCalls
+      : 100;
   const queryMetrics = [
     {
       label: "Total execution",
-      value: "789.3 s",
-      detail: "Current 15-minute window",
-      trend: 12.4,
+      value: `${(totalExecution / 1000).toFixed(1)} s`,
+      detail: "Current cumulative statistics",
+      trend: 0,
       tone: "cyan" as const,
       points: [32, 40, 38, 44, 48, 51, 58, 55, 61, 68, 66, 72],
     },
     {
       label: "Regressions",
-      value: "12",
-      detail: "2 exceed critical threshold",
-      trend: 20.0,
+      value: String(
+        queries.filter((query) => query.status === "regressed").length,
+      ),
+      detail: "Reset-aware collected signals",
+      trend: 0,
       tone: "rose" as const,
       points: [19, 21, 18, 24, 22, 28, 31, 39, 47, 53, 58, 65],
     },
     {
       label: "Mean latency",
-      value: "42.8 ms",
-      detail: "Weighted by calls",
-      trend: 7.8,
+      value: `${weightedLatency.toFixed(2)} ms`,
+      detail: `Weighted by ${totalCalls.toLocaleString()} calls`,
+      trend: 0,
       tone: "amber" as const,
       points: [43, 41, 42, 46, 45, 47, 51, 49, 53, 57, 55, 59],
     },
     {
       label: "Cache hit",
-      value: "98.42%",
-      detail: "16.8 GB blocks read",
-      trend: -0.7,
+      value: `${weightedCacheHit.toFixed(2)}%`,
+      detail: `${queries.length} bounded statements`,
+      trend: 0,
       tone: "violet" as const,
       points: [78, 79, 81, 80, 77, 76, 74, 75, 72, 73, 70, 69],
     },
@@ -47,10 +75,11 @@ export function QueriesPage() {
         description="Find the statements consuming time, I/O, memory, and WAL. Deltas are reset-aware and compare the latest window with its baseline."
         actions={
           <>
-            <button className="button">
+            <DataSourceBadge source={source} />
+            <a className="button" href="/api/queries?limit=250">
               <Download />
-              Export CSV
-            </button>
+              Export JSON
+            </a>
             <a href="/plans" className="button primary">
               <FlaskConical />
               Open EXPLAIN Lab
@@ -63,7 +92,7 @@ export function QueriesPage() {
           <MetricCard metric={metric} key={metric.label} />
         ))}
       </div>
-      <QueryTable queries={demoRepository.queries()} />
+      <QueryTable queries={queries} />
     </div>
   );
 }

@@ -13,9 +13,9 @@ function processRuntimeEnv(): RuntimeEnv {
 export async function getRuntimeEnv(): Promise<RuntimeEnv> {
   try {
     const module = await import("cloudflare:workers");
-    return module.env as RuntimeEnv;
+    const nativeEnv = module.env as RuntimeEnv;
+    return Object.keys(nativeEnv).length > 0 ? nativeEnv : processRuntimeEnv();
   } catch {
     return processRuntimeEnv();
   }
 }
-

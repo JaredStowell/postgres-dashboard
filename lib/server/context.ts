@@ -20,16 +20,27 @@ export function selectTarget(
 ): TargetDefinition {
   const registry = parseTargetRegistry(env);
   const source = requestedSource?.trim() || registry.keys().next().value;
-  if (!source) throw new ApiError(503, "no_targets", "No database targets are configured.");
+  if (!source)
+    throw new ApiError(
+      503,
+      "no_targets",
+      "No database targets are configured.",
+    );
 
   try {
     return resolveTarget(registry, source);
   } catch {
-    throw new ApiError(404, "unknown_target", `Unknown database target: ${source}`);
+    throw new ApiError(
+      404,
+      "unknown_target",
+      `Unknown database target: ${source}`,
+    );
   }
 }
 
-export async function getTargetContext(requestedSource?: string | null): Promise<TargetContext> {
+export async function getTargetContext(
+  requestedSource?: string | null,
+): Promise<TargetContext> {
   const env = await getRuntimeEnv();
   const target = selectTarget(env, requestedSource);
   return { env, target, db: getDatabasePool(target.connectionString) };
@@ -41,20 +52,26 @@ export function resolveControlConnectionString(env: RuntimeEnv): string {
     typeof binding === "object" &&
     binding !== null &&
     "connectionString" in binding &&
-    typeof (binding as { connectionString?: unknown }).connectionString === "string"
+    typeof (binding as { connectionString?: unknown }).connectionString ===
+      "string"
   ) {
     return (binding as { connectionString: string }).connectionString;
   }
 
   if (typeof binding === "string" && binding.length > 0) return binding;
 
-  const direct = optionalString(env, "CONTROL_DATABASE_URL") ?? optionalString(env, "DATABASE_URL");
+  const direct =
+    optionalString(env, "CONTROL_DATABASE_URL") ??
+    optionalString(env, "DATABASE_URL");
   if (direct) return direct;
-  throw new ApiError(503, "control_database_unavailable", "The control database is not configured.");
+  throw new ApiError(
+    503,
+    "control_database_unavailable",
+    "The control database is not configured.",
+  );
 }
 
 export async function getControlDatabase(): Promise<DatabasePool> {
   const env = await getRuntimeEnv();
   return getDatabasePool(resolveControlConnectionString(env));
 }
-

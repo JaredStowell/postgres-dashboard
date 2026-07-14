@@ -1,10 +1,12 @@
-import { ArrowLeft, Bot, Copy, FlaskConical } from "lucide-react";
+import { ArrowLeft, Bot, FlaskConical } from "lucide-react";
 import { demoRepository } from "@/lib/demo/data";
+import type { QueryStat } from "@/lib/demo/types";
+import type { DataSourceState } from "@/lib/server/dashboard-data";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardBody, CardHeader } from "@/components/ui/card";
-import { FindingsList } from "@/components/ui/findings-list";
 import { PageHeader } from "@/components/ui/page-header";
 import { TrendChart } from "@/components/ui/sparkline";
+import { DataSourceBadge } from "@/components/ui/data-source-badge";
 
 function colorSql(sql: string) {
   const chunks = sql.split(
@@ -33,8 +35,20 @@ function colorSql(sql: string) {
   });
 }
 
-export function QueryDetailPage({ id }: { id: string }) {
-  const query = demoRepository.query(id);
+export function QueryDetailPage({
+  id,
+  query: suppliedQuery,
+  source = {
+    mode: "unavailable",
+    label: "Sample preview",
+    detail: "No database data was supplied.",
+  },
+}: {
+  id: string;
+  query?: QueryStat | null;
+  source?: DataSourceState;
+}) {
+  const query = suppliedQuery ?? demoRepository.query(id);
   return (
     <div className="page">
       <a href="/queries" className="page-eyebrow" style={{ marginBottom: 12 }}>
@@ -43,14 +57,11 @@ export function QueryDetailPage({ id }: { id: string }) {
       </a>
       <PageHeader
         eyebrow={`Query ${query.id}`}
-        title="Checkout order lookup"
-        description={`${query.database} · ${query.user} · seen in ${query.tables.join(", ")}`}
+        title="Normalized statement"
+        description={`${query.database} · ${query.user} · cumulative pg_stat_statements evidence`}
         actions={
           <>
-            <button className="button">
-              <Copy />
-              Copy SQL
-            </button>
+            <DataSourceBadge source={source} />
             <a href="/plans" className="button">
               <FlaskConical />
               Explain
@@ -67,12 +78,27 @@ export function QueryDetailPage({ id }: { id: string }) {
           [
             "Mean time",
             `${query.meanTime.toFixed(1)} ms`,
-            "+63.1% vs baseline",
-            "rose",
+            `${query.status} in collected windows`,
+            query.status === "regressed" ? "rose" : "cyan",
           ],
-          ["p95 time", "441.2 ms", "+72.8% vs baseline", "rose"],
-          ["Calls", query.calls.toLocaleString(), "+8.1% in window", "cyan"],
-          ["Shared reads", "14.8k / call", "91.2% cache hit", "amber"],
+          [
+            "Total execution",
+            `${(query.totalTime / 1000).toFixed(1)} s`,
+            "Current statistics window",
+            "violet",
+          ],
+          [
+            "Calls",
+            query.calls.toLocaleString(),
+            `${(query.rows / Math.max(1, query.calls)).toFixed(1)} rows / call`,
+            "cyan",
+          ],
+          [
+            "Cache hit",
+            `${query.cacheHit}%`,
+            `${query.tempIo} temp I/O`,
+            "amber",
+          ],
         ].map(([label, value, detail, tone]) => (
           <Card className="metric-card" key={label as string}>
             <div className="metric-label">{label}</div>
@@ -101,16 +127,17 @@ export function QueryDetailPage({ id }: { id: string }) {
           <Card>
             <CardHeader
               title="Mean execution time"
-              subtitle="7 days · 15 minute rollups"
-              action={<Badge tone="rose">Regression detected</Badge>}
+              subtitle="Collected reset-aware points"
+              action={
+                <Badge tone={query.status === "regressed" ? "rose" : "green"}>
+                  {query.status}
+                </Badge>
+              }
             />
             <CardBody>
               <TrendChart
-                values={[
-                  32, 31, 34, 36, 33, 38, 42, 40, 44, 48, 51, 49, 54, 58, 57,
-                  61, 59, 66, 72, 74, 80, 79, 88, 92, 96, 100,
-                ]}
-                label="Mean execution time over seven days"
+                values={query.points}
+                label="Mean execution time across available collection points"
               />
             </CardBody>
           </Card>
@@ -122,37 +149,41 @@ export function QueryDetailPage({ id }: { id: string }) {
               <div className="info-grid">
                 <div className="info-cell">
                   <span>Total time</span>
-                  <strong>252.4 s</strong>
+                  <strong>{(query.totalTime / 1000).toFixed(1)} s</strong>
                 </div>
                 <div className="info-cell">
                   <span>Rows / call</span>
-                  <strong>25.0</strong>
+                  <strong>
+                    {(query.rows / Math.max(1, query.calls)).toFixed(1)}
+                  </strong>
                 </div>
                 <div className="info-cell">
                   <span>Temp I/O</span>
-                  <strong>1.8 GB</strong>
+                  <strong>{query.tempIo}</strong>
                 </div>
                 <div className="info-cell">
                   <span>WAL</span>
-                  <strong>0 B</strong>
+                  <strong>{query.wal}</strong>
                 </div>
                 <div className="info-cell">
-                  <span>Plans saved</span>
-                  <strong>4</strong>
+                  <span>Database</span>
+                  <strong>{query.database}</strong>
                 </div>
                 <div className="info-cell">
-                  <span>Last planned</span>
-                  <strong>12m ago</strong>
+                  <span>Role</span>
+                  <strong>{query.user}</strong>
                 </div>
               </div>
             </CardBody>
           </Card>
           <Card>
-            <CardHeader title="Related finding" />
-            <FindingsList
-              findings={demoRepository.findings().slice(0, 1)}
-              detailed
-            />
+            <CardHeader title="Reset-aware history" />
+            <CardBody>
+              <div className="privacy-note">
+                Snapshot regressions require at least two usable collection
+                intervals. Reset boundaries are excluded automatically.
+              </div>
+            </CardBody>
           </Card>
           <Card>
             <CardHeader title="Referenced relations" />
@@ -176,6 +207,16 @@ export function QueryDetailPage({ id }: { id: string }) {
                   <Badge>catalog</Badge>
                 </div>
               ))}
+              {query.tables.length === 0 ? (
+                <div className="empty-state">
+                  <div>
+                    <h2>No relation hints extracted</h2>
+                    <p>
+                      Use EXPLAIN to resolve referenced relations precisely.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
             </CardBody>
           </Card>
         </div>

@@ -52,17 +52,20 @@ export type IndexRecord = {
   table: string;
   schema: string;
   size: string;
+  sizeBytes?: number;
   scans: number;
-  type: "btree" | "gin" | "brin";
+  type: string;
   status: "healthy" | "unused" | "duplicate" | "overlap" | "invalid";
   writeCost: "low" | "medium" | "high";
   definition: string;
 };
 
 export type MaintenanceRecord = {
+  relationOid?: number;
   table: string;
   schema: string;
   totalSize: string;
+  totalSizeBytes?: number;
   liveRows: number;
   deadRows: number;
   deadRatio: number;

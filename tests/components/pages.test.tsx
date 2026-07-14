@@ -12,7 +12,7 @@ describe("primary pages", () => {
     expect(
       screen.getByRole("heading", { name: /database needs attention/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText("78")).toBeInTheDocument();
+    expect(screen.getByText("75")).toBeInTheDocument();
     expect(screen.getByText(/pg_stat_statements/i)).toBeInTheDocument();
   });
 

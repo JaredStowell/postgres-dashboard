@@ -13,6 +13,7 @@ import {
   X,
 } from "lucide-react";
 import type { PlanNode } from "@/lib/demo/types";
+import type { PlanDiff as PlanDiffResult } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { PlanTree } from "./plan-tree";
 
@@ -21,21 +22,226 @@ const LazySqlEditor = lazy(async () => ({
 }));
 
 const initialSql =
-  "SELECT o.id, o.total, c.email\nFROM orders o\nJOIN customers c ON c.id = o.customer_id\nWHERE o.store_id = $1 AND o.status = $2\nORDER BY o.created_at DESC\nLIMIT $3";
+  "SELECT customer_id, sum(total_cents) AS revenue\nFROM sales.orders\nWHERE created_at > now() - interval '90 days'\nGROUP BY customer_id\nORDER BY revenue DESC\nLIMIT 25";
+
+function numberValue(record: Record<string, unknown>, key: string): number {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function toPlanNode(value: unknown, path = "root"): PlanNode | null {
+  const document = Array.isArray(value) ? value[0] : value;
+  if (!document || typeof document !== "object") return null;
+  const record = document as Record<string, unknown>;
+  const planValue = record.Plan ?? record;
+  if (!planValue || typeof planValue !== "object") return null;
+  const node = planValue as Record<string, unknown>;
+  const name = String(node["Node Type"] ?? "Plan node");
+  const actualRows = numberValue(node, "Actual Rows");
+  const estimate = numberValue(node, "Plan Rows");
+  const loops = Math.max(1, numberValue(node, "Actual Loops"));
+  const estimateRatio =
+    estimate > 0
+      ? Math.max(actualRows / estimate, estimate / Math.max(1, actualRows))
+      : 1;
+  const critical = name.includes("Seq Scan") || estimateRatio >= 10;
+  const warning =
+    name.includes("Sort") || name.includes("Nested Loop") || estimateRatio >= 3;
+  const children = Array.isArray(node.Plans)
+    ? node.Plans.map((child, index) =>
+        toPlanNode(child, `${path}.${index}`),
+      ).filter((child): child is PlanNode => child !== null)
+    : undefined;
+  return {
+    id: path,
+    name,
+    relation:
+      typeof node["Relation Name"] === "string"
+        ? `${typeof node.Schema === "string" ? `${node.Schema}.` : ""}${node["Relation Name"]}`
+        : undefined,
+    time: numberValue(node, "Actual Total Time"),
+    cost: numberValue(node, "Total Cost"),
+    rows: actualRows || estimate,
+    estimate,
+    loops,
+    tone: critical ? "critical" : warning ? "warning" : "info",
+    detail:
+      [
+        typeof node["Index Name"] === "string"
+          ? `index ${node["Index Name"]}`
+          : null,
+        typeof node.Filter === "string" ? `filter ${node.Filter}` : null,
+        estimate > 0 && estimateRatio >= 2
+          ? `${estimateRatio.toFixed(1)}× estimate error`
+          : null,
+      ]
+        .filter(Boolean)
+        .join(" · ") ||
+      `${actualRows || estimate} rows · ${loops} loop${loops === 1 ? "" : "s"}`,
+    children,
+  };
+}
 
 export function PlanLab({ plan }: { plan: PlanNode }) {
   const [sql, setSql] = useState(initialSql);
+  const [parameters, setParameters] = useState(["", "", ""]);
   const [view, setView] = useState<"tree" | "diff">("tree");
   const [confirming, setConfirming] = useState(false);
-  const [status, setStatus] = useState("Completed in 141 ms");
+  const [status, setStatus] = useState(
+    "Ready · plain EXPLAIN does not execute the query",
+  );
+  const [currentPlan, setCurrentPlan] = useState(plan);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [exportJson, setExportJson] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<
+    Array<{ code: string; severity: string; message: string }>
+  >([]);
+  const [history, setHistory] = useState<
+    Array<{
+      id: string;
+      created_at?: string;
+      execution_time_ms?: number | null;
+    }>
+  >([]);
+  const [baselineRunId, setBaselineRunId] = useState("");
+  const [candidateRunId, setCandidateRunId] = useState("");
+  const [planDiff, setPlanDiff] = useState<PlanDiffResult | null>(null);
 
-  const runExplain = () => {
-    setStatus("Running safe EXPLAIN…");
-    window.setTimeout(() => setStatus("Completed in 141 ms"), 450);
+  const execute = async (analyze: boolean) => {
+    setError(null);
+    setStatus(
+      analyze ? "Running guarded EXPLAIN ANALYZE…" : "Running safe EXPLAIN…",
+    );
+    try {
+      let confirmationToken: string | undefined;
+      if (analyze) {
+        const confirmation = await fetch("/api/explain/confirm", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sql, acknowledgement: "RUN EXPLAIN ANALYZE" }),
+        });
+        const confirmationBody = (await confirmation.json()) as {
+          token?: string;
+          error?: { message?: string };
+        };
+        if (!confirmation.ok || !confirmationBody.token)
+          throw new Error(
+            confirmationBody.error?.message ?? "Confirmation failed",
+          );
+        confirmationToken = confirmationBody.token;
+      }
+      const maximumParameter = [...sql.matchAll(/\$(\d+)/g)].reduce(
+        (maximum, match) => Math.max(maximum, Number(match[1])),
+        0,
+      );
+      const response = await fetch("/api/explain", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sql,
+          parameters: parameters.slice(0, maximumParameter),
+          analyze,
+          confirmationToken,
+          statementTimeoutMs: 3_000,
+          lockTimeoutMs: 500,
+          persist: true,
+        }),
+      });
+      const body = (await response.json()) as {
+        plan?: unknown;
+        runId?: string | null;
+        exports?: { json?: string };
+        metrics?: {
+          executionTimeMs?: number | null;
+          planningTimeMs?: number | null;
+        };
+        warnings?: Array<{ code: string; severity: string; message: string }>;
+        error?: { message?: string };
+      };
+      if (!response.ok || !body.plan)
+        throw new Error(body.error?.message ?? "EXPLAIN failed");
+      const mapped = toPlanNode(body.plan);
+      if (mapped) setCurrentPlan(mapped);
+      setRunId(body.runId ?? null);
+      setExportJson(body.exports?.json ?? null);
+      setWarnings(body.warnings ?? []);
+      const elapsed = analyze
+        ? body.metrics?.executionTimeMs
+        : body.metrics?.planningTimeMs;
+      setStatus(
+        `${analyze ? "Guarded ANALYZE" : "EXPLAIN"} completed${typeof elapsed === "number" ? ` in ${elapsed.toFixed(2)} ms` : ""}`,
+      );
+    } catch (caught) {
+      const message =
+        caught instanceof Error ? caught.message : "EXPLAIN failed";
+      setError(message);
+      setStatus("Request failed safely");
+    } finally {
+      setConfirming(false);
+    }
   };
-  const runAnalyze = () => {
-    setConfirming(false);
-    setStatus("ANALYZE completed in read-only transaction · 141 ms");
+
+  const download = () => {
+    if (!exportJson) return;
+    const url = URL.createObjectURL(
+      new Blob([exportJson], { type: "application/json" }),
+    );
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `index-analyzer-plan-${runId ?? "latest"}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const loadHistory = async () => {
+    try {
+      const response = await fetch("/api/plans?limit=50", {
+        cache: "no-store",
+      });
+      const body = (await response.json()) as {
+        plans?: Array<{
+          id: string;
+          created_at?: string;
+          execution_time_ms?: number | null;
+        }>;
+        error?: { message?: string };
+      };
+      if (!response.ok)
+        throw new Error(body.error?.message ?? "Plan history failed");
+      const plans = body.plans ?? [];
+      setHistory(plans);
+      setCandidateRunId(plans[0]?.id ?? "");
+      setBaselineRunId(plans[1]?.id ?? plans[0]?.id ?? "");
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Plan history failed",
+      );
+    }
+  };
+
+  const compare = async () => {
+    if (!baselineRunId || !candidateRunId || baselineRunId === candidateRunId)
+      return;
+    setError(null);
+    try {
+      const response = await fetch("/api/plans/compare", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ baselineRunId, candidateRunId }),
+      });
+      const body = (await response.json()) as {
+        diff?: PlanDiffResult;
+        error?: { message?: string };
+      };
+      if (!response.ok || !body.diff)
+        throw new Error(body.error?.message ?? "Plan comparison failed");
+      setPlanDiff(body.diff);
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "Plan comparison failed",
+      );
+    }
   };
 
   return (
@@ -78,7 +284,15 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
               <input
                 className="input mono"
                 aria-label="Parameter 1"
-                defaultValue="85b4…f229"
+                value={parameters[0]}
+                placeholder="optional value"
+                onChange={(event) =>
+                  setParameters((values) => [
+                    event.target.value,
+                    values[1] ?? "",
+                    values[2] ?? "",
+                  ])
+                }
               />
             </div>
             <div className="parameter-row">
@@ -92,7 +306,15 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
               <input
                 className="input mono"
                 aria-label="Parameter 2"
-                defaultValue="paid"
+                value={parameters[1]}
+                placeholder="optional value"
+                onChange={(event) =>
+                  setParameters((values) => [
+                    values[0] ?? "",
+                    event.target.value,
+                    values[2] ?? "",
+                  ])
+                }
               />
             </div>
             <div className="parameter-row">
@@ -106,7 +328,15 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
               <input
                 className="input mono"
                 aria-label="Parameter 3"
-                defaultValue="25"
+                value={parameters[2]}
+                placeholder="optional value"
+                onChange={(event) =>
+                  setParameters((values) => [
+                    values[0] ?? "",
+                    values[1] ?? "",
+                    event.target.value,
+                  ])
+                }
               />
             </div>
           </div>
@@ -114,7 +344,10 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
             className="editor-toolbar"
             style={{ borderTop: "1px solid var(--border)", borderBottom: 0 }}
           >
-            <button className="button primary" onClick={runExplain}>
+            <button
+              className="button primary"
+              onClick={() => void execute(false)}
+            >
               <Play />
               Run EXPLAIN
             </button>
@@ -149,7 +382,10 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
               </button>
               <button
                 className={`section-tab${view === "diff" ? " active" : ""}`}
-                onClick={() => setView("diff")}
+                onClick={() => {
+                  setView("diff");
+                  if (history.length === 0) void loadHistory();
+                }}
               >
                 Compare
               </button>
@@ -174,84 +410,106 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
               className="icon-button"
               style={{ marginLeft: 4 }}
               aria-label="Export plan"
+              onClick={download}
+              disabled={!exportJson}
             >
               <Download />
             </button>
           </div>
-          {view === "tree" ? <PlanTree root={plan} /> : <PlanDiff />}
+          {view === "tree" ? (
+            <PlanTree root={currentPlan} />
+          ) : (
+            <PlanDiff
+              history={history}
+              baselineRunId={baselineRunId}
+              candidateRunId={candidateRunId}
+              setBaselineRunId={setBaselineRunId}
+              setCandidateRunId={setCandidateRunId}
+              compare={() => void compare()}
+              diff={planDiff}
+            />
+          )}
           <div className="payload-footer">
             <Check size={12} color="var(--green)" style={{ marginRight: 6 }} />
             {status}
             <span style={{ marginLeft: "auto" }}>
-              Plan run #run_0291 · JSON format
+              {runId ? `Plan run ${runId}` : "Unsaved preview"} · JSON format
             </span>
           </div>
+          {error ? (
+            <div className="privacy-note" style={{ color: "var(--rose)" }}>
+              {error}
+            </div>
+          ) : null}
         </section>
       </div>
       <div className="content-grid equal">
         <section className="card">
           <div className="card-header">
             <h2 className="card-title">Plan signals</h2>
-            <Badge tone="rose">3 material</Badge>
+            <Badge tone={warnings.length > 0 ? "rose" : "green"}>
+              {warnings.length} material
+            </Badge>
           </div>
           <div className="card-body">
             <div className="analysis-list">
-              <Signal
-                tone="rose"
-                title="Heap scan dominates I/O"
-                detail="14,821 shared blocks read from public.orders account for 82% of plan I/O."
-              />
-              <Signal
-                tone="amber"
-                title="Row estimate is 4.5× low"
-                detail="Cardinality error amplifies the nested-loop choice and understates sort cost."
-              />
-              <Signal
-                tone="amber"
-                title="Nested loop repeats 2,219 times"
-                detail="The inner customer lookup is cheap per call but contributes 39.9 ms in aggregate."
-              />
+              {warnings.length > 0 ? (
+                warnings.map((warning) => (
+                  <Signal
+                    key={`${warning.code}:${warning.message}`}
+                    tone={
+                      warning.severity === "critical" ||
+                      warning.severity === "high"
+                        ? "rose"
+                        : "amber"
+                    }
+                    title={warning.code.replaceAll("_", " ")}
+                    detail={warning.message}
+                  />
+                ))
+              ) : (
+                <div className="empty-state">
+                  <div>
+                    <h2>Run EXPLAIN to populate live signals</h2>
+                    <p>
+                      Warnings are derived from the returned PostgreSQL JSON
+                      plan, not from generic advice.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </section>
         <section className="card">
           <div className="card-header">
             <h2 className="card-title">What changed</h2>
-            <span className="card-subtitle">vs plan #run_0284</span>
+            <span className="card-subtitle">Persisted comparison</span>
           </div>
           <div className="card-body">
-            <div className="diff-grid" style={{ marginTop: 0 }}>
-              <div className="diff-side">
-                <Badge>Baseline · 2d ago</Badge>
-                <div className="diff-metric">
-                  <span>Execution</span>
-                  <strong className="number">84.1 ms</strong>
-                </div>
-                <div className="diff-metric">
-                  <span>Shared reads</span>
-                  <strong className="number">7,892</strong>
-                </div>
-                <div className="diff-metric">
-                  <span>Plan shape</span>
-                  <strong>Index scan</strong>
+            {planDiff ? (
+              <div className="analysis-list">
+                {(planDiff.summary.length > 0
+                  ? planDiff.summary
+                  : ["No material plan change was detected."]
+                ).map((summary) => (
+                  <div className="privacy-note" key={summary}>
+                    <Sparkles />
+                    {summary}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state">
+                <div>
+                  <h2>No comparison selected</h2>
+                  <p>
+                    Open Compare, select two persisted runs, and match their
+                    plan nodes.
+                  </p>
                 </div>
               </div>
-              <div className="diff-side">
-                <Badge tone="rose">Current</Badge>
-                <div className="diff-metric">
-                  <span>Execution</span>
-                  <strong className="number delta-up">137.0 ms</strong>
-                </div>
-                <div className="diff-metric">
-                  <span>Shared reads</span>
-                  <strong className="number delta-up">14,821</strong>
-                </div>
-                <div className="diff-metric">
-                  <span>Plan shape</span>
-                  <strong>Bitmap heap</strong>
-                </div>
-              </div>
-            </div>
+            )}
           </div>
         </section>
       </div>
@@ -304,7 +562,10 @@ export function PlanLab({ plan }: { plan: PlanNode }) {
                   <X />
                   Cancel
                 </button>
-                <button className="button danger" onClick={runAnalyze}>
+                <button
+                  className="button danger"
+                  onClick={() => void execute(true)}
+                >
                   <Play />
                   Run guarded ANALYZE
                 </button>
@@ -339,7 +600,27 @@ function Signal({
   );
 }
 
-function PlanDiff() {
+function PlanDiff({
+  history,
+  baselineRunId,
+  candidateRunId,
+  setBaselineRunId,
+  setCandidateRunId,
+  compare,
+  diff,
+}: {
+  history: Array<{
+    id: string;
+    created_at?: string;
+    execution_time_ms?: number | null;
+  }>;
+  baselineRunId: string;
+  candidateRunId: string;
+  setBaselineRunId: (id: string) => void;
+  setCandidateRunId: (id: string) => void;
+  compare: () => void;
+  diff: PlanDiffResult | null;
+}) {
   return (
     <div className="card-body">
       <div
@@ -350,63 +631,98 @@ function PlanDiff() {
           marginBottom: 12,
         }}
       >
-        <select className="context-select">
-          <option>#run_0284 · 2d ago</option>
+        <select
+          className="context-select"
+          aria-label="Baseline plan"
+          value={baselineRunId}
+          onChange={(event) => setBaselineRunId(event.target.value)}
+        >
+          <option value="">Select baseline</option>
+          {history.map((run) => (
+            <option value={run.id} key={run.id}>
+              {run.id.slice(0, 8)} · {run.created_at ?? "saved run"}
+            </option>
+          ))}
         </select>
         <span style={{ color: "var(--subtle)" }}>→</span>
-        <select className="context-select">
-          <option>#run_0291 · current</option>
+        <select
+          className="context-select"
+          aria-label="Candidate plan"
+          value={candidateRunId}
+          onChange={(event) => setCandidateRunId(event.target.value)}
+        >
+          <option value="">Select candidate</option>
+          {history.map((run) => (
+            <option value={run.id} key={run.id}>
+              {run.id.slice(0, 8)} · {run.created_at ?? "saved run"}
+            </option>
+          ))}
         </select>
-        <button className="button" style={{ marginLeft: "auto" }}>
+        <button
+          className="button"
+          style={{ marginLeft: "auto" }}
+          disabled={
+            !baselineRunId ||
+            !candidateRunId ||
+            baselineRunId === candidateRunId
+          }
+          onClick={compare}
+        >
           <ChevronDown />
           Match nodes
         </button>
       </div>
-      <div className="diff-grid">
-        <div className="diff-side">
-          <Badge>Baseline</Badge>
-          <div className="diff-metric">
-            <span>Root time</span>
-            <strong className="number">84.1 ms</strong>
-          </div>
-          <div className="diff-metric">
-            <span>Shared reads</span>
-            <strong className="number">7,892</strong>
-          </div>
-          <div className="diff-metric">
-            <span>Estimate error</span>
-            <strong className="number">1.8×</strong>
-          </div>
-          <div className="diff-metric">
-            <span>Critical node</span>
-            <strong>Index Scan</strong>
+      {history.length < 2 ? (
+        <div className="empty-state">
+          <div>
+            <h2>Capture at least two plans</h2>
+            <p>
+              Persisted runs will appear here after successful EXPLAIN calls.
+            </p>
           </div>
         </div>
-        <div className="diff-side">
-          <Badge tone="rose">Current · +63%</Badge>
-          <div className="diff-metric">
-            <span>Root time</span>
-            <strong className="number delta-up">137.0 ms</strong>
+      ) : diff ? (
+        <div className="analysis-list">
+          <div className="info-grid">
+            <div className="info-cell">
+              <span>Matched nodes</span>
+              <strong>{diff.matches.length}</strong>
+            </div>
+            <div className="info-cell">
+              <span>Material node changes</span>
+              <strong>
+                {
+                  diff.nodes.filter((node) => node.status !== "unchanged")
+                    .length
+                }
+              </strong>
+            </div>
+            <div className="info-cell">
+              <span>Execution delta</span>
+              <strong>
+                {diff.executionTimeChangeMs == null
+                  ? "not measured"
+                  : `${diff.executionTimeChangeMs.toFixed(2)} ms`}
+              </strong>
+            </div>
           </div>
-          <div className="diff-metric">
-            <span>Shared reads</span>
-            <strong className="number delta-up">14,821</strong>
-          </div>
-          <div className="diff-metric">
-            <span>Estimate error</span>
-            <strong className="number delta-up">4.5×</strong>
-          </div>
-          <div className="diff-metric">
-            <span>Critical node</span>
-            <strong>Bitmap Heap</strong>
+          {diff.summary.map((summary) => (
+            <div className="privacy-note" key={summary}>
+              <Sparkles />
+              {summary}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="empty-state">
+          <div>
+            <h2>Select two runs</h2>
+            <p>
+              The comparison is computed and persisted by the control plane.
+            </p>
           </div>
         </div>
-      </div>
-      <div className="privacy-note" style={{ marginTop: 11 }}>
-        <Sparkles />
-        Material change: public.orders moved from an index scan to a bitmap heap
-        scan after selectivity shifted.
-      </div>
+      )}
     </div>
   );
 }
