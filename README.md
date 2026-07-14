@@ -33,7 +33,7 @@ pnpm db:setup
 pnpm dev
 ```
 
-Open `http://127.0.0.1:3000`. The local service listens on PostgreSQL port `55432` and contains multiple fixture schemas, workload history, useful and deliberately problematic indexes, and activity suitable for exercising the dashboard.
+Open `http://127.0.0.1:3000`. The local service listens on PostgreSQL port `55433` and contains multiple fixture schemas, workload history, useful and deliberately problematic indexes, and activity suitable for exercising the dashboard.
 
 To reset the local environment:
 
@@ -100,4 +100,3 @@ AI payloads contain no result rows, redact literals/comments by default, have a 
 ## Project status
 
 Local implementation and verification are owned by this repository. Cloudflare and PlanetScale resource creation and the final production deployment are intentionally completed with the repository owner.
-

@@ -9,12 +9,12 @@
     {
       "binding": "CONTROL_DB",
       "id": "REPLACE_WITH_CONTROL_HYPERDRIVE_ID",
-      "localConnectionString": "postgres://index_analyzer:index_analyzer@127.0.0.1:55432/index_analyzer"
+      "localConnectionString": "postgres://index_analyzer:index_analyzer@127.0.0.1:55433/index_analyzer"
     },
     {
       "binding": "TARGET_LOCAL",
       "id": "REPLACE_WITH_TARGET_HYPERDRIVE_ID",
-      "localConnectionString": "postgres://index_analyzer:index_analyzer@127.0.0.1:55432/index_analyzer"
+      "localConnectionString": "postgres://index_analyzer:index_analyzer@127.0.0.1:55433/index_analyzer"
     }
   ],
   "vars": {
