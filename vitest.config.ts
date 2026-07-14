@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
@@ -11,5 +13,5 @@ export default defineConfig({
       thresholds: { lines: 80, functions: 80, branches: 75, statements: 80 },
     },
   },
-  resolve: { alias: { "@": new URL(".", import.meta.url).pathname } },
+  resolve: { alias: { "@": fileURLToPath(new URL(".", import.meta.url)) } },
 });
