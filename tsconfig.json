@@ -15,7 +15,7 @@
     "esModuleInterop": true,
     "jsx": "preserve",
     "incremental": true,
-    "types": ["@cloudflare/workers-types/2023-07-01", "vitest/globals"],
+    "types": ["@cloudflare/workers-types", "vitest/globals"],
     "baseUrl": ".",
     "paths": {
       "@/*": ["./*"]
